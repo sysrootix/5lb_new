@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output
+frontend/dist/
+backend/dist/
+mobile/android/
+mobile/ios/
+mobile/.expo/
+mobile/.expo-shared/
+
+# Environment files
+*.env
+*.env.*
+!.env.example
+
+# Mobile specific
+mobile/.expo/
+mobile/.expo-shared/
+mobile/*.jks
+mobile/*.keystore
+# eas.json можно коммитить (безопасен, нет секретов)
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Misc
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+frontend/public/.image-backups/
+
+# Docker related
+backups/
+*.sql
+*.sql.gz
+postgres_data/
+uploads/
+backend/uploads/
+
+# PM2
+.pm2/

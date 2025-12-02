@@ -1,0 +1,921 @@
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { Loader2, Send } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { useAuthStore } from '@/store/authStore';
+import { GlobalBackground } from '@/components/GlobalBackground';
+import {
+  loginWithTelegram,
+  getTelegramConfig
+} from '@/api/auth';
+import type { TelegramAuthResult, TelegramGlobal } from '@/types/telegram';
+import { useTelegramApp } from '@/hooks/useTelegramApp';
+
+interface TelegramConfig {
+  botId: string;
+}
+
+const pageVariants = {
+  initial: { opacity: 0, y: 20 },
+  enter: { opacity: 1, y: 0, transition: { duration: 0.4 } },
+  exit: { opacity: 0, y: -20, transition: { duration: 0.3 } },
+};
+
+export const LoginPage = () => {
+  const navigate = useNavigate();
+  const { setUser } = useAuthStore();
+  const { isTelegramApp, setTelegramThemeColor, initData } = useTelegramApp();
+
+  const [telegramReady, setTelegramReady] = useState(false);
+  const [telegramConfig, setTelegramConfig] = useState<TelegramConfig | null>(null);
+  const [isTelegramLoading, setIsTelegramLoading] = useState(false);
+
+  // Скролл наверх при монтировании
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }, []);
+
+  // Устанавливаем цвет Telegram WebApp
+  useEffect(() => {
+    if (isTelegramApp) {
+      setTelegramThemeColor('#0F0501');
+    }
+  }, [isTelegramApp, setTelegramThemeColor]);
+
+  const getTelegramLogin = () => {
+    const telegram = (window as typeof window & { Telegram?: TelegramGlobal }).Telegram;
+    return telegram?.Login;
+  };
+
+  // Загружаем конфигурацию Telegram
+  useEffect(() => {
+    let isActive = true;
+
+    getTelegramConfig()
+      .then((config) => {
+        if (isActive) {
+          setTelegramConfig(config);
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          setTelegramConfig(null);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const scriptId = 'telegram-login-widget';
+
+    const telegramLogin = getTelegramLogin();
+
+    if (telegramLogin?.auth) {
+      setTelegramReady(true);
+      return;
+    }
+
+    let isMounted = true;
+    let script = document.getElementById(scriptId) as HTMLScriptElement | null;
+
+    const handleLoad = () => {
+      if (isMounted) {
+        setTelegramReady(true);
+      }
+    };
+
+    const handleError = () => {
+      if (isMounted) {
+        setTelegramReady(false);
+      }
+    };
+
+    if (!script) {
+      script = document.createElement('script');
+      script.id = scriptId;
+      script.src = 'https://telegram.org/js/telegram-widget.js?22';
+      script.async = true;
+      document.body.appendChild(script);
+    }
+
+    script.addEventListener('load', handleLoad);
+    script.addEventListener('error', handleError);
+
+    return () => {
+      isMounted = false;
+      script?.removeEventListener('load', handleLoad);
+      script?.removeEventListener('error', handleError);
+    };
+  }, []);
+
+  // Форматирование телефона для отображения
+  const formatPhoneDisplay = (value: string) => {
+    if (!value || value.length === 0) return '';
+
+    const digits = value.replace(/\D/g, '');
+
+    // digits всегда начинается с "7" (код России)
+    // Показываем только цифры ПОСЛЕ кода страны
+    if (digits.length === 0) return '';
+    if (digits.length === 1) return '+7 ('; // Только код страны
+    if (digits.length <= 4) return `+7 (${digits.slice(1)}`;
+    if (digits.length <= 7)
+      return `+7 (${digits.slice(1, 4)}) ${digits.slice(4)}`;
+    if (digits.length <= 9)
+      return `+7 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
+    return `+7 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7, 9)}-${digits.slice(9, 11)}`;
+  };
+
+  const handlePhoneChange = (value: string) => {
+    // Убираем все кроме цифр
+    let digits = value.replace(/\D/g, '');
+
+    // Обработка разных форматов ввода
+    if (digits.length === 0) {
+      setPhone('');
+      return;
+    }
+
+    // Если начинается с 8, заменяем на 7
+    if (digits.startsWith('8')) {
+      digits = '7' + digits.slice(1);
+    }
+    // Если начинается с 9, добавляем 7 впереди
+    else if (digits.startsWith('9')) {
+      digits = '7' + digits;
+    }
+    // Если НЕ начинается с 7 и это не пустая строка
+    else if (!digits.startsWith('7')) {
+      digits = '7' + digits;
+    }
+
+    // Ограничиваем длину 11 символами
+    if (digits.length > 11) {
+      digits = digits.slice(0, 11);
+    }
+
+    setPhone(digits);
+  };
+
+  const handleRequestCall = async () => {
+    if (phone.length !== 11) {
+      toast.error('Введите корректный номер телефона');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      await requestSmsCode(phone);
+      toast.success('Сейчас вам позвонят! Ответьте на звонок и запомните 4-значный код', {
+        duration: 5000,
+      });
+      // Если это первый звонок - переходим на шаг code
+      if (step === 'phone') {
+        setStep('code');
+        setResendTimer(60);
+        setCanResend(false);
+        setResendAttempts(0); // Сбрасываем счетчик при первом звонке
+      } else {
+        // Если это повторный звонок - увеличиваем счетчик
+        setResendTimer(60);
+        setCanResend(false);
+        setResendAttempts(prev => prev + 1);
+      }
+    } catch (error) {
+      toast.error('Не удалось отправить звонок. Попробуйте еще раз');
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCodeChange = (index: number, value: string) => {
+    if (!/^\d*$/.test(value)) return;
+
+    const newCode = [...code];
+    newCode[index] = value.slice(-1);
+    setCode(newCode);
+
+    // Автофокус на следующее поле
+    if (value && index < 3) {
+      codeInputs.current[index + 1]?.focus();
+    }
+
+    // Автоматическая отправка когда все поля заполнены
+    if (newCode.every((digit) => digit !== '') && index === 3) {
+      handleVerifyCode(newCode.join(''));
+    }
+  };
+
+  const handleCodeKeyDown = (index: number, e: React.KeyboardEvent) => {
+    if (e.key === 'Backspace' && !code[index] && index > 0) {
+      codeInputs.current[index - 1]?.focus();
+    }
+  };
+
+  const handleVerifyCode = async (codeString: string) => {
+    setIsLoading(true);
+    try {
+      const response = await verifySms(phone, codeString);
+
+      setUser(response.user);
+      toast.success('Успешный вход!');
+
+      // Проверяем isRegistrationComplete из объекта пользователя
+      if (response.needsRegistration && !response.user.isRegistrationComplete) {
+        navigate('/complete-registration');
+      } else {
+        // Проверяем, есть ли сохраненный URL для возврата
+        const returnUrl = sessionStorage.getItem('returnUrl');
+        if (returnUrl) {
+          sessionStorage.removeItem('returnUrl');
+          navigate(returnUrl);
+        } else {
+          navigate('/');
+        }
+      }
+    } catch (error) {
+      toast.error('Неверный код. Попробуйте еще раз');
+      setCode(['', '', '', '']);
+      codeInputs.current[0]?.focus();
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleResend = () => {
+    if (canResend) {
+      // Показываем модальное окно при первом нажатии "Повторный звонок"
+      if (resendAttempts >= 1) {
+        setShowTelegramOfferModal(true);
+      } else {
+        handleRequestCall();
+      }
+    }
+  };
+
+  const handleTelegramOfferChoose = (choice: 'telegram' | 'call') => {
+    setShowTelegramOfferModal(false);
+    if (choice === 'telegram') {
+      handleTelegramLogin();
+    } else {
+      // Продолжаем попытки звонка
+      handleRequestCall();
+    }
+  };
+
+  // Интеграция кнопки "Назад" Telegram
+  useEffect(() => {
+    const tg = window.Telegram?.WebApp;
+    if (!tg) return;
+
+    tg.BackButton?.show();
+
+    return () => {
+      tg.BackButton?.hide();
+    };
+  }, []);
+
+  useEffect(() => {
+    const tg = window.Telegram?.WebApp;
+    if (!tg) return;
+
+    const onBack = () => {
+      if (step === 'code') {
+        setStep('phone');
+        setCode(['', '', '', '']);
+        setResendAttempts(0);
+      } else {
+        navigate(-1);
+      }
+    };
+
+    tg.BackButton?.onClick(onBack);
+
+    return () => {
+      tg.BackButton?.offClick(onBack);
+    };
+  }, [step, navigate]);
+
+  const handleTelegramLogin = async () => {
+    if (isTelegramLoading) {
+      return;
+    }
+
+    setIsTelegramLoading(true);
+
+    try {
+      // Если это Telegram WebApp - используем initData напрямую
+      if (isTelegramApp && initData) {
+        try {
+          const response = await loginWithTelegram(initData);
+          setUser(response.user);
+          toast.success('Вход через Telegram выполнен!');
+
+          // Проверяем isRegistrationComplete из объекта пользователя
+          if (response.needsRegistration && !response.user.isRegistrationComplete) {
+            navigate('/complete-registration');
+          } else {
+            // Проверяем, есть ли сохраненный URL для возврата
+            const returnUrl = sessionStorage.getItem('returnUrl');
+            if (returnUrl) {
+              sessionStorage.removeItem('returnUrl');
+              navigate(returnUrl);
+            } else {
+              navigate('/');
+            }
+          }
+          return;
+        } catch (error: any) {
+          // Если пользователь не найден в Telegram WebApp - запрашиваем телефон
+          const errorMessage = error?.response?.data?.message || error?.message;
+          
+          if (errorMessage === 'TELEGRAM_USER_NOT_FOUND') {
+            // Пользователь не найден - сохраняем Telegram данные и переходим на регистрацию
+            toast('Завершите регистрацию', { icon: '✍️', duration: 3000 });
+            
+            // Сохраняем initData для последующего использования при регистрации
+            if (initData) {
+              localStorage.setItem('telegram_init_data', initData);
+            }
+            
+            setIsTelegramLoading(false);
+            navigate('/complete-registration');
+            return;
+          }
+          
+          // Другие ошибки пробрасываем дальше
+          throw error;
+        }
+      }
+
+      // Иначе используем старый OAuth виджет для браузера
+      if (!telegramReady) {
+        toast.error('Подождите, Telegram еще загружается');
+        setIsTelegramLoading(false);
+        return;
+      }
+
+      if (!telegramConfig?.botId) {
+        toast.error('Telegram авторизация временно недоступна');
+        setIsTelegramLoading(false);
+        return;
+      }
+
+      const telegramAuth = getTelegramLogin();
+
+      if (!telegramAuth?.auth) {
+        toast.error('Не удалось инициализировать Telegram виджет');
+        setIsTelegramLoading(false);
+        return;
+      }
+
+      telegramAuth.auth(
+        {
+          bot_id: telegramConfig.botId,
+          request_access: 'write',
+          lang: 'ru',
+          origin: window.location.origin
+        },
+        async (authData: TelegramAuthResult) => {
+          // Обрабатываем случай, когда Telegram виджет не может авторизовать пользователя
+          if (!authData || !authData.hash) {
+            // Если есть номер телефона, используем его для входа через телефон
+            if (authData?.phone_number) {
+              handlePhoneChange(authData.phone_number);
+              setPendingPhone(authData.phone_number);
+              toast('Используйте номер телефона для входа', { icon: '📱', duration: 3000 });
+              setIsTelegramLoading(false);
+              setStep('code');
+              return;
+            }
+            
+            toast.error('Не удалось авторизоваться через Telegram. Попробуйте войти через номер телефона.');
+            setIsTelegramLoading(false);
+            return;
+          }
+
+          if (authData.phone_number) {
+            handlePhoneChange(authData.phone_number);
+            setPendingPhone(authData.phone_number);
+          }
+
+          const params = new URLSearchParams();
+          (Object.entries(authData) as Array<[string, unknown]>).forEach(([key, value]) => {
+            if (value !== undefined && value !== null) {
+              params.append(key, String(value));
+            }
+          });
+
+          try {
+            const response = await loginWithTelegram(params.toString());
+            setUser(response.user);
+            toast.success('Вход через Telegram выполнен!');
+
+            // Проверяем isRegistrationComplete из объекта пользователя
+            if (response.needsRegistration && !response.user.isRegistrationComplete) {
+              navigate('/complete-registration');
+            } else {
+              // Проверяем, есть ли сохраненный URL для возврата
+              const returnUrl = sessionStorage.getItem('returnUrl');
+              if (returnUrl) {
+                sessionStorage.removeItem('returnUrl');
+                navigate(returnUrl);
+              } else {
+                navigate('/');
+              }
+            }
+          } catch (error: any) {
+            console.error('Telegram login error:', error);
+            const errorMessage = error?.response?.data?.message || error?.message;
+            
+            // Обрабатываем случай, когда пользователь не найден
+            if (errorMessage === 'TELEGRAM_USER_NOT_FOUND') {
+              toast('Завершите регистрацию', { icon: '✍️', duration: 3000 });
+              
+              // Сохраняем initData для последующего использования при регистрации
+              const paramsString = params.toString();
+              if (paramsString) {
+                localStorage.setItem('telegram_init_data', paramsString);
+              }
+              
+              setIsTelegramLoading(false);
+              navigate('/complete-registration');
+              return;
+            }
+            
+            toast.error('Не удалось авторизоваться через Telegram. Попробуйте войти через номер телефона.');
+          } finally {
+            setIsTelegramLoading(false);
+          }
+        }
+      );
+    } catch (error) {
+      console.error(error);
+      toast.error('Не удалось авторизоваться через Telegram');
+      setIsTelegramLoading(false);
+    }
+  };
+  const handleAlreadyHaveCode = () => {
+    if (!phone || phone.length !== 11) {
+      toast.error('Сначала введите номер телефона');
+      return;
+    }
+    setStep('code');
+  };
+
+  const isTelegramButtonDisabled = isTelegramLoading || 
+    (!isTelegramApp && (!telegramReady || !telegramConfig?.botId));
+
+  return (
+    <main className="relative min-h-screen overflow-hidden">
+
+      <div className="relative flex min-h-screen items-center justify-center px-4 py-6">
+        <motion.div
+          className="w-full max-w-md"
+          variants={pageVariants}
+          initial="initial"
+          animate="enter"
+          exit="exit"
+        >
+
+          {/* Основная карточка */}
+          <motion.div
+            className="overflow-hidden rounded-3xl bg-[#180C06]/80 backdrop-blur-xl p-6 shadow-2xl border border-white/5"
+            layout
+          >
+            <AnimatePresence mode="wait">
+              {step === 'phone' ? (
+                <motion.div
+                  key="phone"
+                  variants={pageVariants}
+                  initial="initial"
+                  animate="enter"
+                  exit="exit"
+                >
+                  {/* Компактный заголовок */}
+                  <div className="mb-6 text-center">
+                    <motion.div
+                      className="mx-auto mb-4 flex h-16 w-16 items-center justify-center"
+                      animate={{ 
+                        y: [0, -4, 0],
+                      }}
+                      transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+                    >
+                      <img src="/logo.svg" alt="5LB" className="h-full w-full drop-shadow-lg" />
+                    </motion.div>
+                    <motion.h1 
+                      className="text-2xl font-black tracking-tight text-white"
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.1 }}
+                    >
+                      Добро пожаловать
+                    </motion.h1>
+                    <motion.p 
+                      className="mt-2 text-sm font-medium text-gray-400"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ delay: 0.2 }}
+                    >
+                      Войдите или зарегистрируйтесь, чтобы начать покупки
+                    </motion.p>
+                  </div>
+
+                  {/* Компактный Telegram блок */}
+                  <motion.div 
+                    className="relative mb-5 overflow-hidden rounded-2xl border border-[#2AABEE]/20 bg-gradient-to-br from-[#2AABEE]/5 to-transparent p-4"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                  >
+                    <div className="relative">
+                      <div className="mb-3 flex items-center gap-2.5">
+                        <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-[#2AABEE]/15">
+                          <Zap size={20} className="text-[#2AABEE]" />
+                        </div>
+                        <div className="flex-1">
+                          <h2 className="text-base font-bold text-[#2AABEE]">
+                            Мгновенный вход через Telegram
+                          </h2>
+                          <p className="text-xs font-medium text-[#2AABEE]/70">
+                            Без звонков, без СМС — просто один клик
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mb-3 space-y-1.5">
+                        <div className="flex items-center gap-2 text-xs text-[#2AABEE]/80">
+                          <Shield size={14} className="text-[#2AABEE]" />
+                          <span className="font-medium">Безопасно и быстро</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-[#2AABEE]/80">
+                          <Sparkles size={14} className="text-[#2AABEE]" />
+                          <span className="font-medium">Не требует кода подтверждения</span>
+                        </div>
+                      </div>
+
+                      <motion.button
+                        onClick={handleTelegramLogin}
+                        disabled={isTelegramButtonDisabled}
+                        className="group relative flex w-full items-center justify-center gap-2.5 overflow-hidden rounded-xl bg-gradient-to-r from-[#2AABEE] to-[#229ED9] px-4 py-3 text-sm font-bold text-white shadow-lg shadow-[#2AABEE]/20 disabled:cursor-not-allowed disabled:opacity-60"
+                        whileHover={isTelegramButtonDisabled ? {} : { scale: 1.01 }}
+                        whileTap={isTelegramButtonDisabled ? {} : { scale: 0.99 }}
+                      >
+                        {isTelegramLoading ? (
+                          <>
+                            <Loader2 size={18} className="animate-spin" />
+                            <span>Авторизуем...</span>
+                          </>
+                        ) : (
+                          <>
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z" />
+                            </svg>
+                            <span>Войти через Telegram</span>
+                          </>
+                        )}
+                      </motion.button>
+                    </div>
+                  </motion.div>
+
+                  {/* OAuth провайдеры (Скрыты) */}
+                  {/* 
+                  <motion.div 
+                    className="mb-5 space-y-2"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.35 }}
+                  >
+                    ... (OAuth buttons) ...
+                  </motion.div>
+
+                  <motion.div 
+                    className="mb-5 flex items-center gap-3"
+                    initial={{ opacity: 0, scaleX: 0 }}
+                    animate={{ opacity: 1, scaleX: 1 }}
+                    transition={{ delay: 0.4 }}
+                  >
+                    <div className="h-px flex-1 bg-gradient-to-r from-transparent via-5lb-gray-200 to-transparent" />
+                    <span className="text-xs font-bold uppercase tracking-wider text-5lb-gray-400">или</span>
+                    <div className="h-px flex-1 bg-gradient-to-r from-transparent via-5lb-gray-200 to-transparent" />
+                  </motion.div>
+                  */}
+
+                  {/* Разделитель для телефона */}
+                   <motion.div 
+                    className="mb-5 flex items-center gap-3"
+                    initial={{ opacity: 0, scaleX: 0 }}
+                    animate={{ opacity: 1, scaleX: 1 }}
+                    transition={{ delay: 0.4 }}
+                  >
+                    <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+                    <span className="text-xs font-bold uppercase tracking-wider text-white/30">или по телефону</span>
+                    <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+                  </motion.div>
+
+                  {/* Компактное поле телефона */}
+                  <motion.div 
+                    className="mb-4"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.5 }}
+                  >
+                    <label className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-gray-400">
+                      <Phone size={14} className="text-[#FF6B00]" />
+                      Номер телефона
+                    </label>
+                    <div className="relative flex items-center">
+                      <input
+                        type="tel"
+                        value={formatPhoneDisplay(phone)}
+                        onChange={(e) => handlePhoneChange(e.target.value)}
+                        placeholder="+7 (999) 123-45-67"
+                        style={{
+                          color: '#FFFFFF',
+                          backgroundColor: '#2A1205',
+                          caretColor: '#FF6B00',
+                        }}
+                        className="w-full rounded-xl border-2 border-white/10 bg-[#2A1205] px-4 py-3 pr-12 text-base font-bold text-white shadow-sm transition-all placeholder:font-normal placeholder:text-white/30 focus:border-[#FF6B00] focus:outline-none focus:ring-2 focus:ring-[#FF6B00]/20"
+                        autoFocus
+                      />
+                      {phone.length === 11 && (
+                        <motion.div
+                          className="absolute right-4 top-0 bottom-0 flex items-center"
+                          initial={{ scale: 0, rotate: -180 }}
+                          animate={{ scale: 1, rotate: 0 }}
+                          transition={{ type: 'spring', stiffness: 500 }}
+                        >
+                          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-green-500/20">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="text-green-500">
+                              <path d="M20 6L9 17l-5-5" />
+                            </svg>
+                          </div>
+                        </motion.div>
+                      )}
+                    </div>
+                  </motion.div>
+
+                  {/* Компактная кнопка "Позвонить мне" */}
+                  <motion.button
+                    onClick={handleRequestCall}
+                    disabled={isLoading || phone.length !== 11}
+                    className="group relative w-full overflow-hidden rounded-xl bg-gradient-to-r from-5lb-orange-500 to-5lb-red-500 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-5lb-orange-500/30 transition-all disabled:opacity-50 disabled:shadow-none"
+                    whileHover={{ scale: 1.01 }}
+                    whileTap={{ scale: 0.99 }}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.6 }}
+                  >
+                    <div className="relative flex items-center justify-center gap-2">
+                      {isLoading ? (
+                        <>
+                          <Loader2 size={18} className="animate-spin" />
+                          <span>Отправляем...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Phone size={18} />
+                          <span>Позвонить мне</span>
+                          <ArrowRight size={18} className="transition-transform group-hover:translate-x-0.5" />
+                        </>
+                      )}
+                    </div>
+                  </motion.button>
+
+                  {/* Соглашение */}
+                  <p className="mt-4 text-center text-xs leading-relaxed text-5lb-gray-500">
+                    Продолжая, вы соглашаетесь с{' '}
+                    <Link to="/terms" className="font-semibold text-5lb-orange-500 underline">
+                      Правилами пользования
+                    </Link>{' '}
+                    и{' '}
+                    <Link to="/privacy" className="font-semibold text-5lb-orange-500 underline">
+                      Политикой конфиденциальности
+                    </Link>
+                  </p>
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="code"
+                  variants={pageVariants}
+                  initial="initial"
+                  animate="enter"
+                  exit="exit"
+                >
+                  {/* Компактный заголовок для кода */}
+                  <div className="mb-6 text-center">
+                    <motion.div
+                      className="relative mx-auto mb-4 flex h-16 w-16 items-center justify-center"
+                      animate={{ scale: [1, 1.05, 1] }}
+                      transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                    >
+                      <div className="absolute inset-0 rounded-full bg-gradient-to-br from-5lb-orange-500 to-5lb-red-500 blur-lg opacity-30" />
+                      <div className="relative flex h-full w-full items-center justify-center rounded-full bg-gradient-to-br from-5lb-orange-500 to-5lb-red-500 shadow-lg">
+                        <Phone size={24} className="text-white" />
+                      </div>
+                    </motion.div>
+                    <motion.h1 
+                      className="text-2xl font-black text-5lb-gray-900"
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                    >
+                      Введите код из звонка
+                    </motion.h1>
+                    <motion.div 
+                      className="mt-3 space-y-1"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ delay: 0.1 }}
+                    >
+                      <p className="text-sm font-medium text-5lb-gray-700">
+                        Звоним на{' '}
+                        <span className="font-bold text-5lb-orange-600">{formatPhoneDisplay(phone)}</span>
+                      </p>
+                      <p className="text-xs text-5lb-gray-600">
+                        Возьмите трубку — робот продиктует вам код
+                      </p>
+                    </motion.div>
+                  </div>
+
+                  {/* Компактные поля для кода */}
+                  <div className="mb-6 flex justify-center gap-2.5">
+                    {code.map((digit, index) => (
+                      <motion.div
+                        key={index}
+                        className="relative"
+                        initial={{ scale: 0, rotate: -180, opacity: 0 }}
+                        animate={{ scale: 1, rotate: 0, opacity: 1 }}
+                        transition={{ delay: index * 0.08, type: 'spring', stiffness: 400 }}
+                      >
+                        <input
+                          ref={(el) => (codeInputs.current[index] = el)}
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={1}
+                          value={digit}
+                          onChange={(e) => handleCodeChange(index, e.target.value)}
+                          onKeyDown={(e) => handleCodeKeyDown(index, e)}
+                          style={{
+                            color: '#111827',
+                            backgroundColor: '#FFFFFF',
+                            caretColor: '#FF7F32',
+                          }}
+                          className={`h-16 w-16 rounded-xl border-2 bg-white text-center text-3xl font-black shadow-md transition-all focus:outline-none focus:ring-2 ${
+                            digit
+                              ? 'border-5lb-orange-500 text-5lb-gray-900 ring-2 ring-5lb-orange-500/20'
+                              : 'border-5lb-gray-200 text-5lb-gray-900 focus:border-5lb-orange-500 focus:ring-5lb-orange-500/20'
+                          }`}
+                        />
+                        {digit && (
+                          <motion.div
+                            className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-green-500 shadow-md"
+                            initial={{ scale: 0 }}
+                            animate={{ scale: 1 }}
+                            transition={{ type: 'spring', stiffness: 500 }}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3">
+                              <path d="M20 6L9 17l-5-5" />
+                            </svg>
+                          </motion.div>
+                        )}
+                      </motion.div>
+                    ))}
+                  </div>
+
+                  {/* Компактная повторная отправка */}
+                  <div className="text-center">
+                    {canResend ? (
+                      <motion.button
+                        onClick={handleResend}
+                        className="inline-flex items-center gap-2 rounded-xl bg-5lb-orange-100 px-4 py-2.5 text-sm font-bold text-5lb-orange-600 transition hover:bg-5lb-orange-200"
+                        whileHover={{ scale: 1.03 }}
+                        whileTap={{ scale: 0.97 }}
+                      >
+                        <Phone size={16} />
+                        Позвонить еще раз
+                      </motion.button>
+                    ) : (
+                      <div className="inline-flex items-center gap-2.5 rounded-xl bg-5lb-gray-50 px-4 py-2.5">
+                        <div className="flex h-6 w-6 items-center justify-center">
+                          <motion.div
+                            className="h-6 w-6 rounded-full border-3 border-5lb-gray-200"
+                            style={{
+                              borderTopColor: '#FF7F32',
+                            }}
+                            animate={{ rotate: 360 }}
+                            transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+                          />
+                        </div>
+                        <p className="text-xs font-medium text-5lb-gray-600">
+                          Повторный звонок через{' '}
+                          <span className="font-bold text-5lb-orange-600">{resendTimer} сек</span>
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {isLoading && (
+                    <motion.div 
+                      className="mt-4 flex items-center justify-center gap-2.5 rounded-xl bg-5lb-orange-50 px-4 py-2.5"
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                    >
+                      <Loader2 size={18} className="animate-spin text-5lb-orange-500" />
+                      <span className="text-sm font-bold text-5lb-orange-600">Проверяем код...</span>
+                    </motion.div>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.div>
+
+          {/* Дополнительная информация */}
+          {step === 'phone' && (
+            <motion.div
+              className="mt-4 text-center"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3 }}
+            >
+              <p className="text-xs text-5lb-gray-600">
+                Уже получили код?{' '}
+                <button
+                  onClick={handleAlreadyHaveCode}
+                  className="font-semibold text-5lb-orange-500 underline"
+                >
+                  Введите его здесь
+                </button>
+              </p>
+            </motion.div>
+          )}
+        </motion.div>
+      </div>
+
+      {/* Модальное окно предложения Telegram после второй попытки */}
+      {showTelegramOfferModal && (
+        <GradientModal
+          isOpen={showTelegramOfferModal}
+          onClose={() => setShowTelegramOfferModal(false)}
+          title="Звонок не приходит?"
+          subtitle="Попробуйте другой способ"
+          icon={Phone}
+          maxWidth="md"
+          showHandle={false}
+        >
+          <div className="p-6">
+              <p className="mb-6 text-sm font-medium text-5lb-gray-700">
+                Звонок не доходит? Войдите через Telegram — это быстрее и удобнее!
+              </p>
+
+              <div className="space-y-3">
+                {/* Кнопка Telegram */}
+                <motion.button
+                  onClick={() => handleTelegramOfferChoose('telegram')}
+                  className="group relative w-full overflow-hidden rounded-2xl bg-gradient-to-r from-blue-500 to-blue-600 px-6 py-4 text-left shadow-lg transition hover:shadow-xl"
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  disabled={isTelegramLoading}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/20 backdrop-blur-sm">
+                      <Zap size={20} className="text-white" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="font-bold text-white">Войти через Telegram</div>
+                      <div className="text-xs font-medium text-white/90">Быстро и безопасно</div>
+                    </div>
+                    <ArrowRight size={20} className="text-white/80 transition group-hover:text-white group-hover:translate-x-1" />
+                  </div>
+                </motion.button>
+
+                {/* Кнопка повторного звонка */}
+                <motion.button
+                  onClick={() => handleTelegramOfferChoose('call')}
+                  className="group relative w-full overflow-hidden rounded-2xl border-2 border-5lb-gray-200 bg-white px-6 py-4 text-left transition hover:border-5lb-orange-300 hover:bg-5lb-orange-50"
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
+                  disabled={isLoading}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-5lb-orange-100">
+                      <Phone size={20} className="text-5lb-orange-600" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="font-bold text-5lb-gray-900">Повторный звонок</div>
+                      <div className="text-xs font-medium text-5lb-gray-600">Попробовать еще раз</div>
+                    </div>
+                    <ArrowRight size={20} className="text-5lb-gray-400 transition group-hover:text-5lb-orange-600 group-hover:translate-x-1" />
+                  </div>
+                </motion.button>
+              </div>
+          </div>
+        </GradientModal>
+      )}
+    </main>
+  );
+};

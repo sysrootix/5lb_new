@@ -1,0 +1,845 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id String @id @default(cuid())
+
+  // Контактные данные
+  phone String  @unique
+  email String?
+
+  // Персональные данные
+  firstName   String?
+  lastName    String?
+  middleName  String? // Отчество
+  displayName String?
+  dateOfBirth DateTime?
+  dateOfBirthLastUpdated DateTime? // Последнее изменение даты рождения
+  gender      Gender?
+  avatar      String? // URL аватара
+
+  // Telegram интеграция
+  telegramId       String? @unique
+  telegramUsername String?
+  telegramChatId   String?
+
+  // OAuth интеграция
+  googleId String? @unique
+  yandexId String? @unique
+  appleId  String? @unique
+
+  // Реферальная система
+  referralCode String? @unique // Уникальный реферальный код пользователя
+  referredById String? // Кто пригласил
+  referredBy   User?   @relation("Referrals", fields: [referredById], references: [id])
+  referrals    User[]  @relation("Referrals") // Кого пригласил этот пользователь
+
+  // Бонусная система
+  bonusBalance Int @default(0)
+  userBonusCards UserBonusCard[]
+
+  // Адреса доставки
+  addresses Address[]
+
+  // Заказы
+  orders Order[]
+
+  // Founder's Links
+  foundersLinks FoundersLink[]
+
+  // Roulette Log
+  rouletteLog RouletteLog?
+
+  // Избранное (старая модель Product)
+  favorites Product[] @relation("UserFavorites")
+
+  // Избранное каталога (CatalogProduct externalId)
+  catalogFavorites Json? // Массив ID товаров из каталога: ["prod_001", "prod_002"]
+
+  // Корзина: массив объектов { productId, shopCode, quantity, modificationIndex? }
+  cart Json? // [{ productId: "prod_001", shopCode: "13", quantity: 2, modificationIndex: 0 }]
+
+  // Refresh токены
+  refreshTokens RefreshToken[]
+
+  // Настройки коммуникации
+  emailNotifications    Boolean @default(true)
+  smsNotifications      Boolean @default(true)
+  telegramNotifications Boolean @default(true)
+  pushNotifications     Boolean @default(true)
+  marketingConsent      Boolean @default(false)
+
+  // Метаданные
+  isRegistrationComplete Boolean   @default(false) // Завершена ли регистрация
+  registrationSource     String? // "phone", "telegram", "web"
+  lastLoginAt            DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([phone])
+  @@index([telegramId])
+  @@index([email])
+  @@index([referralCode])
+  @@index([referredById])
+  @@index([googleId])
+  @@index([yandexId])
+  @@index([appleId])
+}
+
+model RefreshToken {
+  id     String @id @default(cuid())
+  token  String @unique
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  // Для безопасности: отслеживание устройства
+  userAgent String?
+  ipAddress String?
+
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+model Address {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Адрес
+  city      String
+  street    String
+  building  String
+  apartment String?
+  entrance  String?
+  floor     String?
+  comment   String?
+
+  // Координаты для карты
+  latitude  Float?
+  longitude Float?
+
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orders Order[]
+
+  @@index([userId])
+}
+
+model Order {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  addressId String
+  address   Address @relation(fields: [addressId], references: [id])
+
+  // Статус заказа
+  status OrderStatus @default(PENDING)
+
+  // Цены
+  subtotal    Float // Сумма товаров
+  discount    Float @default(0)
+  bonusUsed   Int   @default(0)
+  deliveryFee Float @default(0)
+  total       Float // Итоговая сумма
+
+  // Оплата
+  paymentMethod String // "cash", "card", "online"
+  isPaid        Boolean @default(false)
+
+  // Товары в заказе
+  items OrderItem[]
+
+  // Доставка
+  deliveryDate DateTime?
+  deliveryTime String? // "10:00-12:00"
+
+  // Комментарий
+  comment String?
+
+  bonusTransactions BonusTransaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+enum OrderStatus {
+  PENDING // Ожидает обработки
+  CONFIRMED // Подтвержден
+  PREPARING // Готовится
+  DELIVERING // Доставляется
+  COMPLETED // Завершен
+  CANCELLED // Отменен
+}
+
+model OrderItem {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+
+  quantity Int
+  price    Float // Цена на момент заказа
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+model Product {
+  id String @id @default(cuid())
+
+  // Основная информация
+  name        String
+  description String?
+  images      String[] // URLs изображений
+
+  // Цена и наличие
+  price    Float
+  oldPrice Float? // Старая цена для скидки
+  inStock  Boolean @default(true)
+  quantity Int     @default(0)
+
+  // Категория и бренд
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id])
+  brand      String?
+
+  // SEO
+  slug String @unique
+
+  // Характеристики (JSON)
+  specs Json?
+
+  // Избранное
+  favoritedBy          User[]          @relation("UserFavorites")
+  favoritedByAnonymous AnonymousUser[] @relation("AnonymousFavorites")
+
+  // Заказы
+  orderItems OrderItem[]
+
+  // Метаданные
+  featured  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([slug])
+  @@index([categoryId])
+}
+
+model Category {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  icon        String?
+  image       String?
+  description String?
+
+  parentId String?
+  parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryHierarchy")
+
+  products Product[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([slug])
+  @@index([parentId])
+}
+
+model UserBackup {
+  id        String   @id @default(cuid())
+  userId    String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// =====================================================
+// Модели для системы каталогов франшизы
+// =====================================================
+
+model ShopLocation {
+  id String @id @default(cuid())
+
+  // Основная информация
+  shopCode String @unique // Код магазина для интеграции с 1С
+  shopName String // Название магазина
+
+  // Адрес и локация
+  address String?
+  city    String  @default("Москва")
+
+  // Дополнительная информация
+  description  String?
+  phone        String?
+  workingHours String?
+
+  // Ссылки на карты
+  twogisUrl     String?
+  yandexMapsUrl String?
+  googleMapsUrl String?
+
+  // Координаты
+  latitude  Float?
+  longitude Float?
+
+  // Настройки отображения
+  priorityOrder Int     @default(0)
+  isActive      Boolean @default(true)
+
+  // Связи
+  products CatalogProduct[]
+
+  // Метаданные
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shopCode])
+  @@index([isActive])
+  @@index([city])
+  @@index([priorityOrder])
+  @@map("shop_locations")
+}
+
+model CatalogProduct {
+  id String @id @default(cuid())
+
+  // Идентификаторы из 1С
+  externalId String // ID товара из 1С
+
+  // Основная информация
+  name          String
+  categoryName  String?
+  categoryId    String?
+  subcategoryId String?
+  subcategory   CatalogSubcategory? @relation(fields: [subcategoryId], references: [id])
+  brandId       String?
+  brand         CatalogBrand?       @relation(fields: [brandId], references: [id])
+
+  // Цены и количество
+  retailPrice   Float?
+  purchasePrice Float?
+  quantity      Float?
+
+  // Дополнительные данные (JSON)
+  characteristics Json? // Характеристики (цвет, размер, вкус и т.д.)
+  modifications   Json? // Модификации товара
+
+  // Связь с магазином
+  shopCode String
+  shop     ShopLocation @relation(fields: [shopCode], references: [shopCode], onDelete: Cascade)
+  shopName String?
+
+  // Статус
+  isActive Boolean @default(true)
+
+  // Метаданные
+  lastUpdated DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@unique([externalId, shopCode])
+  @@index([shopCode])
+  @@index([name])
+  @@index([categoryId])
+  @@index([subcategoryId])
+  @@index([brandId])
+  @@index([isActive])
+  @@index([lastUpdated])
+  @@map("catalog_products")
+}
+
+model CatalogSubcategory {
+  id String @id @default(cuid())
+
+  // Основная информация
+  name        String
+  slug        String  @unique
+  categoryId  String // Родительская категория
+  description String?
+  icon        String?
+  image       String?
+
+  // Сортировка
+  orderIndex Int @default(0)
+
+  // Статус
+  isActive Boolean @default(true)
+
+  // Связи
+  products CatalogProduct[]
+
+  // Метаданные
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([categoryId])
+  @@index([slug])
+  @@index([isActive])
+  @@index([orderIndex])
+  @@map("catalog_subcategories")
+}
+
+model CatalogBrand {
+  id String @id @default(cuid())
+
+  // Основная информация
+  name        String  @unique
+  slug        String  @unique
+  description String?
+  logo        String?
+  website     String?
+
+  // Статус
+  isActive Boolean @default(true)
+
+  // Связи
+  products CatalogProduct[]
+
+  // Метаданные
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([slug])
+  @@index([isActive])
+  @@map("catalog_brands")
+}
+
+model CatalogExclusion {
+  id String @id @default(cuid())
+
+  // Тип исключения
+  exclusionType ExclusionType
+  itemId        String
+
+  // Информация
+  reason String?
+
+  // Статус
+  isActive Boolean @default(true)
+
+  // Кто создал
+  createdBy String?
+
+  // Метаданные
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([exclusionType, itemId])
+  @@index([exclusionType])
+  @@index([isActive])
+  @@map("catalog_exclusions")
+}
+
+enum ExclusionType {
+  PRODUCT
+  CATEGORY
+}
+
+// =====================================================
+// Модель для анонимных пользователей
+// =====================================================
+
+model AnonymousUser {
+  id String @id @default(cuid())
+
+  // Идентификация через browser fingerprint
+  fingerprintId String @unique // Уникальный fingerprint браузера
+
+  // Опциональная связь с реальным пользователем после авторизации
+  userId String? // ID пользователя после авторизации
+
+  // Избранное (старая модель Product)
+  favorites Product[] @relation("AnonymousFavorites")
+
+  // Избранное каталога (CatalogProduct externalId)
+  catalogFavorites Json? // Массив ID товаров из каталога: ["prod_001", "prod_002"]
+
+  // Корзина: массив объектов { productId, shopCode, quantity, modificationIndex? }
+  cart Json? // [{ productId: "prod_001", shopCode: "13", quantity: 2, modificationIndex: 0 }]
+
+  // Метаданные
+  lastActivityAt DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([fingerprintId])
+  @@index([userId])
+  @@index([lastActivityAt])
+}
+
+// =====================================================
+// Модели для системы призов (колесо фортуны)
+// =====================================================
+
+model Prize {
+  id String @id @default(cuid())
+
+  // Основная информация
+  name String // Название приза (например, "1000 бонусов")
+  code String @unique // Код приза (например, "bonus_1000")
+  weight Int // Вес приза для вероятности выпадения
+
+  // Статус
+  isActive Boolean @default(true)
+
+  // Метаданные
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Связи
+  prizeCodes PrizeCode[]
+
+  @@index([code])
+  @@index([isActive])
+  @@map("prizes")
+}
+
+model PrizeCode {
+  id String @id @default(cuid())
+
+  // Уникальный хеш для ссылки
+  hash String @unique
+
+  // Связь с призом
+  prizeId String
+  prize Prize @relation(fields: [prizeId], references: [id])
+
+  // Информация о призе (дублируем для быстрого доступа)
+  prizeName String
+  prizeCode String
+
+  // Статус использования
+  used Boolean @default(false)
+  usedAt DateTime?
+
+  // Связь с пользователем (если использован)
+  userId String?
+  
+  // Telegram ID пользователя (даже если не зарегистрирован в системе)
+  telegramId String?
+
+  // Метаданные
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([hash])
+  @@index([prizeId])
+  @@index([used])
+  @@index([userId])
+  @@index([telegramId])
+  @@map("prize_codes")
+}
+
+// =====================================================
+// Модели для бонусной системы (новые)
+// =====================================================
+
+model BonusCard {
+  id          String   @id @default(cuid())
+  code        String   @unique // 'BASE', 'PARTNER'
+  name        String
+  description String?
+  imageUrl    String?
+  isActive    Boolean  @default(true)
+  
+  // Settings specific to this card type
+  settings    Json?    // { expirationMonths: 6, maxRedemptionPercent: 30 }
+
+  userCards   UserBonusCard[]
+  wheelOptions BonusWheelOption[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("bonus_cards")
+}
+
+model UserBonusCard {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  cardId      String
+  card        BonusCard @relation(fields: [cardId], references: [id])
+  
+  balance     Int      @default(0)
+  isActive    Boolean  @default(true)
+  
+  transactions BonusTransaction[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, cardId])
+  @@map("user_bonus_cards")
+}
+
+model BonusTransaction {
+  id          String   @id @default(cuid())
+  
+  userCardId  String
+  userCard    UserBonusCard @relation(fields: [userCardId], references: [id], onDelete: Cascade)
+  
+  amount      Int      // Can be negative
+  type        BonusTransactionType
+  description String?
+  
+  orderId     String?
+  order       Order?   @relation(fields: [orderId], references: [id])
+
+  expiresAt   DateTime? // When these specific bonuses expire (for accruals)
+  isExpired   Boolean   @default(false) // If strictly processed
+
+  createdAt   DateTime @default(now())
+
+  @@index([userCardId])
+  @@index([type])
+  @@map("bonus_transactions")
+}
+
+enum BonusTransactionType {
+  ACCRUAL
+  REDEMPTION
+  EXPIRATION
+  ADJUSTMENT
+}
+
+// Configuration for the wheel
+model BonusWheelOption {
+  id          String   @id @default(cuid())
+  cardId      String   // specific to a card type, e.g. BASE
+  card        BonusCard @relation(fields: [cardId], references: [id])
+  
+  percentage  Float    // e.g. 5, 10, 15
+  probability Float    // Weight or percentage chance (0-100 or relative weight)
+  isActive    Boolean  @default(true)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("bonus_wheel_options")
+}
+
+model Promotion {
+  id              String   @id @default(uuid())
+  title           String
+  description     String
+  imageUrl        String
+  startDate       DateTime
+  endDate         DateTime
+  link            String
+  showBeforeStart Boolean  @default(false) // Показывать ли акцию до даты начала
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Banner {
+  id          String   @id @default(cuid())
+  imageUrl    String
+  title       String?
+  link        String?
+  startDate   DateTime?
+  endDate     DateTime?
+  isActive    Boolean  @default(true)
+  priority    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([priority])
+  @@map("banners")
+}
+
+// =====================================================
+// Модель для новостей (News)
+// =====================================================
+
+model News {
+  id          String   @id @default(cuid())
+  title       String   // Заголовок новости
+  description String   // Краткое описание
+  imageUrl    String   // URL изображения
+  link        String?  // Опциональная ссылка при клике
+
+  // Статус и порядок отображения
+  isActive    Boolean  @default(true)
+  priority    Int      @default(0) // Порядок отображения (больше = выше)
+
+  // Даты активности
+  startDate   DateTime?
+  endDate     DateTime?
+
+  // Метаданные
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([priority])
+  @@map("news")
+}
+
+// =====================================================
+// Модели для системы историй (Stories)
+// =====================================================
+
+model Story {
+  id           String   @id @default(cuid())
+  title        String   // Название истории (отображается снизу слева на превью)
+  previewImage String   // URL превью изображения для главной страницы
+  link         String?  // Опциональная ссылка при клике
+
+  // Статус и порядок отображения
+  isActive     Boolean  @default(true)
+  priority     Int      @default(0) // Порядок отображения (больше = выше)
+
+  // Даты активности
+  startDate    DateTime?
+  endDate      DateTime?
+
+  // Связи
+  pages        StoryPage[]
+
+  // Метаданные
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([priority])
+  @@map("stories")
+}
+
+model StoryPage {
+  id       String   @id @default(cuid())
+  storyId  String
+  story    Story    @relation(fields: [storyId], references: [id], onDelete: Cascade)
+
+  // Тип фона (медиа)
+  type     StoryMediaType // IMAGE или VIDEO
+  url      String         // URL изображения или видео фона
+  
+  // Контент поверх фона (текст, кнопки, списки)
+  content  Json?          // Структура блоков
+
+  // Опциональная ссылка (если нет кнопок или для свайпа)
+  link     String?
+
+  // Порядок отображения в истории
+  order    Int      @default(0)
+
+  // Длительность в секундах (для видео или статики)
+  duration Int?
+
+  // Градиентный блюр (overlay)
+  hasBlur Boolean @default(false)
+
+  // Метаданные
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([storyId])
+  @@index([order])
+  @@map("story_pages")
+}
+
+enum StoryMediaType {
+  IMAGE
+  VIDEO
+}
+
+model FoundersLink {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  
+  // Status
+  isUsed    Boolean  @default(false)
+  usedAt    DateTime?
+  
+  // Who used it
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  
+  telegramId String? // If used by unregistered user initially
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([code])
+  @@index([isUsed])
+  @@map("founders_links")
+}
+
+// =====================================================
+// Модели для CRM (Admin)
+// =====================================================
+
+model Admin {
+  id                String   @id @default(cuid())
+  username          String   @unique
+  password          String
+  role              String   @default("admin") // "root", "admin", "manager"
+  permissions       Json?    // ["users:read", "users:write", "admins:manage"]
+  mustChangePassword Boolean  @default(false)
+
+  lastLoginAt       DateTime?
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("admins")
+}
+
+// =====================================================
+// Модели для рулетки бонусов (Bonus Roulette)
+// =====================================================
+
+model RouletteItem {
+  id          String   @id @default(cuid())
+  name        String   // Название (например, "1000 бонусов")
+  amount      Int      // Количество бонусов
+  probability Float    // Вероятность выпадения (процент)
+  color       String?  // Цвет сектора (hex)
+  isActive    Boolean  @default(true)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("roulette_items")
+}
+
+model RouletteLog {
+  id        String   @id @default(cuid())
+  userId    String   @unique // Один пользователь - одна прокрутка
+  user      User     @relation(fields: [userId], references: [id])
+  
+  amount    Int      // Выигранная сумма
+  
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("roulette_logs")
+}

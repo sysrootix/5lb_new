@@ -1,0 +1,12 @@
+
+> crm-frontend@0.0.0 dev
+> vite
+
+
+  VITE v5.4.21  ready in 246 ms
+
+  ➜  Local:   http://localhost:5001/crm/
+  ➜  Network: http://148.253.208.84:5001/crm/
+  ➜  press h + enter to show help
+4:17:24 PM [vite] changed tsconfig file detected: /root/5lb/crm/crm_frontend/tsconfig.json - Clearing cache and forcing full-reload to ensure TypeScript is compiled with updated config values.
+4:18:24 PM [vite] changed tsconfig file detected: /root/5lb/crm/crm_frontend/tsconfig.json - Clearing cache and forcing full-reload to ensure TypeScript is compiled with updated config values.

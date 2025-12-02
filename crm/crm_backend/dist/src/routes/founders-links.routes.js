@@ -1,0 +1,13 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const auth_middleware_1 = require("../middleware/auth.middleware");
+const founders_links_controller_1 = require("../controllers/founders-links.controller");
+const router = (0, express_1.Router)();
+router.use(auth_middleware_1.authenticateToken);
+router.get('/', founders_links_controller_1.getFoundersLinks);
+router.get('/export', founders_links_controller_1.getAllForExport);
+router.post('/', founders_links_controller_1.createFoundersLink);
+router.post('/bulk', founders_links_controller_1.createBulkFoundersLinks);
+router.delete('/:id', founders_links_controller_1.deleteFoundersLink);
+exports.default = router;

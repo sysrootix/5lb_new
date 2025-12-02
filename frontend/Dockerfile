@@ -1,0 +1,49 @@
+# Build stage
+FROM node:20-alpine AS build
+
+WORKDIR /app
+
+# Копируем файлы зависимостей
+COPY package*.json ./
+
+# Устанавливаем зависимости
+RUN npm ci && npm cache clean --force
+
+# Копируем исходный код
+COPY . .
+
+# Собираем приложение
+RUN npm run build
+
+# Production stage с nginx
+FROM nginx:alpine AS production
+
+# Копируем собранное приложение
+COPY --from=build /app/dist /usr/share/nginx/html
+
+# Копируем конфигурацию nginx для SPA
+RUN echo 'server { \n\
+    listen 80; \n\
+    server_name localhost; \n\
+    root /usr/share/nginx/html; \n\
+    index index.html; \n\
+    \n\
+    location / { \n\
+        try_files $uri $uri/ /index.html; \n\
+    } \n\
+    \n\
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ { \n\
+        expires 1y; \n\
+        add_header Cache-Control "public, immutable"; \n\
+    } \n\
+}' > /etc/nginx/conf.d/default.conf
+
+# Открываем порт
+EXPOSE 80
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost/ || exit 1
+
+# Запускаем nginx
+CMD ["nginx", "-g", "daemon off;"]

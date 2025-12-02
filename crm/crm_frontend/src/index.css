@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-[#0F0501] text-white font-sans min-h-screen;
+}
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200;
+  }
+  
+  .btn-primary {
+    @apply bg-primary text-white hover:bg-5lb-orange-600;
+  }
+  
+  .input {
+    @apply w-full px-4 py-2 rounded-lg bg-5lb-gray-800 border border-5lb-gray-700 text-white focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all;
+  }
+  
+  .card {
+    @apply bg-5lb-gray-800 rounded-xl p-6 border border-5lb-gray-700;
+  }
+}

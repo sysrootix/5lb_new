@@ -1,0 +1,29 @@
+module.exports = {
+  apps: [
+    {
+      name: '5lb-backend',
+      cwd: './backend',
+      // TypeScript build emits under dist/backend/src due to rootDir spanning repo
+      script: 'dist/backend/src/index.js',
+      interpreter: 'node',
+      // Load the existing env file used by dotenv in code
+      env_file: './backend/.env',
+      instances: 1,
+      autorestart: true,
+      max_restarts: 5,
+      max_memory_restart: '4096M',
+      env: {
+        NODE_ENV: 'production',
+        PORT: 4000,
+        APP_DOMAIN: 'https://app.5lb.pro',
+        API_PUBLIC_URL: 'https://app.5lb.pro/api'
+      },
+      env_production: {
+        NODE_ENV: 'production',
+        PORT: 4000,
+        APP_DOMAIN: 'https://app.5lb.pro',
+        API_PUBLIC_URL: 'https://app.5lb.pro/api'
+      }
+    }
+  ]
+};

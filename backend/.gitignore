@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+
+# Certificates (ВАЖНО!)
+*.p12
+*.pem
+*.key
+*.crt
+src/certs/*.p12
+src/certs/*.pem
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Prisma
+prisma/.env
+
+# Uploads
+uploads/
+!uploads/.gitkeep
+
+# Test coverage
+coverage/
+
+# Temporary files
+tmp/
+temp/
+

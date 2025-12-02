@@ -1,0 +1,123 @@
+version: '3.8'
+
+# Development Docker Compose - с hot reload и отладкой
+# Использование: docker-compose -f docker-compose.dev.yml up
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: 5lb-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-5lb_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=ru_RU.UTF-8"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - 5lb-dev-network
+
+  # Backend Service with hot reload
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: 5lb-backend-dev
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-5lb_db}
+      JWT_SECRET: ${JWT_SECRET}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      PORT: 60000
+    ports:
+      - "60000:60000"
+      - "9229:9229"  # Node.js debug port
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - ./backend/uploads:/app/uploads
+    networks:
+      - 5lb-dev-network
+    command: npm run dev
+
+  # CRM Backend with hot reload
+  crm-backend:
+    build:
+      context: ./crm/crm_backend
+      dockerfile: Dockerfile.dev
+    container_name: 5lb-crm-backend-dev
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-5lb_db}
+      JWT_SECRET: ${JWT_SECRET}
+      PORT: 60001
+    ports:
+      - "60001:60001"
+      - "9230:9229"  # Node.js debug port
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./crm/crm_backend:/app
+      - /app/node_modules
+    networks:
+      - 5lb-dev-network
+    command: npm run dev
+
+  # Frontend with Vite dev server
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: 5lb-frontend-dev
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:60000/api
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - 5lb-dev-network
+    command: npm run dev -- --host
+
+  # CRM Frontend with Vite dev server
+  crm-frontend:
+    build:
+      context: ./crm/crm_frontend
+      dockerfile: Dockerfile.dev
+    container_name: 5lb-crm-frontend-dev
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:60001/api
+    ports:
+      - "5174:5173"
+    volumes:
+      - ./crm/crm_frontend:/app
+      - /app/node_modules
+    networks:
+      - 5lb-dev-network
+    command: npm run dev -- --host
+
+volumes:
+  postgres_dev_data:
+    driver: local
+
+networks:
+  5lb-dev-network:
+    driver: bridge

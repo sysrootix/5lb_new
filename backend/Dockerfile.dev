@@ -1,0 +1,18 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Устанавливаем зависимости для development
+COPY package*.json ./
+COPY prisma ./prisma/
+
+RUN npm install && \
+    npx prisma generate
+
+# Копируем все для hot reload
+COPY . .
+
+EXPOSE 60000 9229
+
+# Development режим с hot reload
+CMD ["npm", "run", "dev"]

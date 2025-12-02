@@ -1,0 +1,9 @@
+{
+  "domain": "https://app.5lb.pro",
+  "apiBaseUrl": "https://app.5lb.pro/api",
+  "webAppUrl": "https://app.5lb.pro",
+  "staticAssetsPath": "/var/www/5lb/dist",
+  "allowedOrigins": [
+    "https://app.5lb.pro"
+  ]
+}

@@ -1,0 +1,143 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: 5lb-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-5lb_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=ru_RU.UTF-8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/prisma/migrations:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - 5lb-network
+
+  # Backend Service
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: 5lb-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-5lb_db}
+      JWT_SECRET: ${JWT_SECRET}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      PORT: 60000
+    ports:
+      - "60000:60000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend/uploads:/app/uploads
+    networks:
+      - 5lb-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:60000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # CRM Backend Service
+  crm-backend:
+    build:
+      context: ./crm
+      dockerfile: Dockerfile.backend
+    container_name: 5lb-crm-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-5lb_db}
+      JWT_SECRET: ${JWT_SECRET}
+      PORT: 60001
+    ports:
+      - "60001:60001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - 5lb-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:60001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend Service
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: 5lb-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: /api
+    networks:
+      - 5lb-network
+
+  # CRM Frontend Service
+  crm-frontend:
+    build:
+      context: ./crm
+      dockerfile: Dockerfile.frontend
+    container_name: 5lb-crm-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: /crm-api
+    networks:
+      - 5lb-network
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: 5lb-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/docker-nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/docker-app.conf:/etc/nginx/conf.d/app.conf:ro
+      - ./nginx/docker-crm.conf:/etc/nginx/conf.d/crm.conf:ro
+      - nginx_cache:/var/cache/nginx
+      - nginx_logs:/var/log/nginx
+      # Let's Encrypt certificates (если используешь)
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - backend
+      - crm-backend
+      - frontend
+      - crm-frontend
+    networks:
+      - 5lb-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+    driver: local
+  nginx_cache:
+    driver: local
+  nginx_logs:
+    driver: local
+
+networks:
+  5lb-network:
+    driver: bridge

@@ -1,0 +1,36 @@
+{
+  "name": "5lb",
+  "private": true,
+  "version": "0.1.0",
+  "description": "5LB monorepo for web, mobile, and backend apps",
+  "workspaces": [
+    "frontend",
+    "backend",
+    "mobile"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "build:frontend": "npm --workspace frontend run build",
+    "build:backend": "npm --workspace backend run build",
+    "build:mobile": "npm --workspace mobile run build || echo 'Build command pending setup'",
+    "lint": "npm run lint --workspaces",
+    "format": "npm run format --workspaces",
+    "optimize-images": "node scripts/optimize-images.js"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.22",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.17"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.90.11",
+    "axios": "^1.13.2",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.23.24",
+    "lucide-react": "^0.555.0",
+    "react-router-dom": "^6.30.2",
+    "recharts": "^3.5.0",
+    "tailwind-merge": "^3.4.0",
+    "zustand": "^5.0.8"
+  }
+}

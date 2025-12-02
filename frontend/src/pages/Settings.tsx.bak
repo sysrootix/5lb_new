@@ -1,0 +1,1351 @@
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import toast from 'react-hot-toast';
+import { motion } from 'framer-motion';
+import {
+  fetchProfile,
+  updateProfile,
+  requestPhoneChange,
+  confirmPhoneChange,
+  linkTelegramAccount,
+  unlinkTelegramAccount,
+  getTelegramConfig,
+  deleteAccount as deleteAccountApi,
+  logout as logoutApi,
+  uploadAvatar as uploadAvatarApi,
+  type NotificationSettings,
+  type ProfileResponse,
+  type UpdateProfilePayload,
+  type PhoneChangeRequestResponse,
+  type User
+} from '@/api/auth';
+import { useAuthStore } from '@/store/authStore';
+import { formatPhoneDisplay, sanitizePhoneInput } from '@/utils/phoneFormat';
+import type { TelegramAuthResult, TelegramGlobal } from '@/types/telegram';
+import {
+  ArrowLeft,
+  Loader2,
+  User2,
+  Phone as PhoneIcon,
+  ShieldCheck,
+  Gift,
+  MessageCircle,
+  Bell,
+  Send,
+  Link2,
+  Unlink,
+  Smartphone,
+  Camera,
+  Upload,
+  Settings as SettingsIcon,
+  Mail,
+  Lock
+} from 'lucide-react';
+import { getAvatarUrl } from '@/utils/avatarUtils';
+import { GradientModal } from '@/components/GradientModal';
+
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1, transition: { staggerChildren: 0.05, delayChildren: 0.05 } }
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 12 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: { type: 'spring', stiffness: 280, damping: 26 }
+  }
+};
+
+const getTelegramLogin = () =>
+  (window as typeof window & { Telegram?: TelegramGlobal }).Telegram?.Login;
+
+const mapProfileToUser = (profile: ProfileResponse, previous?: User | null): User => ({
+  id: profile.id,
+  phone: profile.phone,
+  firstName: profile.firstName,
+  lastName: profile.lastName,
+  middleName: profile.middleName,
+  displayName: profile.displayName,
+  avatar: profile.avatar,
+  dateOfBirth: profile.profile.dateOfBirth,
+  gender: profile.profile.gender,
+  telegramId: profile.telegramId ?? previous?.telegramId ?? null,
+  telegramUsername: profile.telegramUsername ?? null,
+  referralCode: previous?.referralCode ?? null,
+  bonusBalance: profile.bonus,
+  notifications: profile.notifications,
+  isRegistrationComplete: profile.profile.isCompleted
+});
+
+const formatStoredPhone = (phone?: string | null) => {
+  if (!phone) {
+    return 'Не указан';
+  }
+
+  if (phone.startsWith('tg:')) {
+    return 'Telegram';
+  }
+
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length !== 11) {
+    return phone;
+  }
+
+  return `+${digits[0]} (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(
+    7,
+    9
+  )}-${digits.slice(9, 11)}`;
+};
+
+export const SettingsPage = () => {
+  const navigate = useNavigate();
+  const { user, isAuthenticated, setUser, logout: clearAuth } = useAuthStore();
+
+  const [profile, setProfile] = useState<ProfileResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [fioForm, setFioForm] = useState({
+    firstName: '',
+    lastName: '',
+    middleName: ''
+  });
+  const [isSavingFio, setIsSavingFio] = useState(false);
+
+  const [notifications, setNotifications] = useState<NotificationSettings>({
+    email: true,
+    sms: true,
+    telegram: true,
+    push: true,
+    marketing: false
+  });
+  const [pendingToggle, setPendingToggle] = useState<{
+    key: keyof NotificationSettings;
+    value: boolean;
+  } | null>(null);
+  const [isUpdatingNotification, setIsUpdatingNotification] = useState(false);
+
+  const [phoneForm, setPhoneForm] = useState({ newPhone: '', code: '' });
+  const [isRequestingPhone, setIsRequestingPhone] = useState(false);
+  const [isConfirmingPhone, setIsConfirmingPhone] = useState(false);
+
+  const [telegramConfig, setTelegramConfig] = useState<{ botId: string } | null>(null);
+  const [telegramReady, setTelegramReady] = useState(false);
+  const [isTelegramLoading, setIsTelegramLoading] = useState(false);
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [activeTab, setActiveTab] = useState<'profile' | 'notifications' | 'contacts' | 'security'>('profile');
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      navigate('/login');
+      return;
+    }
+
+    const loadProfile = async () => {
+      try {
+        const data = await fetchProfile();
+        syncFromProfile(data);
+      } catch (error) {
+        console.error(error);
+        toast.error('Не удалось загрузить настройки');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    const loadTelegramConfig = async () => {
+      try {
+        const config = await getTelegramConfig();
+        setTelegramConfig(config);
+      } catch {
+        setTelegramConfig(null);
+      }
+    };
+
+    const scriptId = 'telegram-login-widget';
+    const telegramLogin = getTelegramLogin();
+    let cleanup: (() => void) | undefined;
+
+    if (telegramLogin?.auth) {
+      setTelegramReady(true);
+    } else {
+      let script = document.getElementById(scriptId) as HTMLScriptElement | null;
+      if (!script) {
+        script = document.createElement('script');
+        script.id = scriptId;
+        script.src = 'https://telegram.org/js/telegram-widget.js?22';
+        script.async = true;
+        document.body.appendChild(script);
+      }
+
+      const handleLoad = () => setTelegramReady(true);
+      const handleError = () => setTelegramReady(false);
+      script.addEventListener('load', handleLoad);
+      script.addEventListener('error', handleError);
+
+      cleanup = () => {
+        script?.removeEventListener('load', handleLoad);
+        script?.removeEventListener('error', handleError);
+      };
+    }
+
+    loadProfile();
+    loadTelegramConfig();
+
+    return cleanup;
+  }, [isAuthenticated, navigate]);
+
+  const syncFromProfile = (data: ProfileResponse) => {
+    setProfile(data);
+    setFioForm({
+      firstName: data.firstName ?? '',
+      lastName: data.lastName ?? '',
+      middleName: data.middleName ?? ''
+    });
+    setNotifications(data.notifications);
+    setPhoneForm((prev) => ({ ...prev, code: '' }));
+    setUser(mapProfileToUser(data, user));
+  };
+
+  const handleSaveProfile = async () => {
+    if (!profile) return;
+    const payload: UpdateProfilePayload = {
+      firstName: fioForm.firstName || null,
+      lastName: fioForm.lastName || null,
+      middleName: fioForm.middleName || null
+    };
+
+    setIsSavingFio(true);
+    try {
+      const updated = await updateProfile(payload);
+      syncFromProfile(updated);
+      toast.success('Профиль обновлён');
+    } catch (error) {
+      console.error(error);
+      toast.error('Не удалось сохранить изменения');
+    } finally {
+      setIsSavingFio(false);
+    }
+  };
+
+  const applyNotificationToggle = async (key: keyof NotificationSettings, value: boolean) => {
+    if (!profile) {
+      return;
+    }
+
+    setIsUpdatingNotification(true);
+    try {
+      const updated = await updateProfile({ notifications: { [key]: value } });
+      syncFromProfile(updated);
+      toast.success(
+        value
+          ? 'Отлично! Мы продолжим делиться важными новостями.'
+          : 'Отключили. Если передумаете — включайте, там часто бывают секретные подарки.'
+      );
+    } catch (error) {
+      console.error(error);
+      setNotifications((prev) => ({ ...prev, [key]: !value }));
+      toast.error('Не удалось обновить настройку уведомлений');
+    } finally {
+      setIsUpdatingNotification(false);
+    }
+  };
+
+  const handleNotificationToggle = (key: keyof NotificationSettings, value: boolean) => {
+    setNotifications((prev) => ({ ...prev, [key]: value }));
+
+    if (!value) {
+      setPendingToggle({ key, value });
+      return;
+    }
+
+    void applyNotificationToggle(key, value);
+  };
+
+  const confirmNotificationToggle = () => {
+    if (!pendingToggle) {
+      return;
+    }
+    const { key, value } = pendingToggle;
+    setPendingToggle(null);
+    void applyNotificationToggle(key, value);
+  };
+
+  const cancelNotificationToggle = () => {
+    if (!pendingToggle) {
+      return;
+    }
+    setNotifications((prev) => ({ ...prev, [pendingToggle.key]: true }));
+    setPendingToggle(null);
+  };
+
+  const handleLogout = async () => {
+    setIsLoggingOut(true);
+    try {
+      await logoutApi();
+      clearAuth();
+      toast.success('Вы вышли из аккаунта');
+      navigate('/');
+    } catch (error) {
+      console.error(error);
+      toast.error('Не удалось выйти из аккаунта');
+    } finally {
+      setIsLoggingOut(false);
+      setShowLogoutModal(false);
+    }
+  };
+
+  const handleAvatarUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Проверка размера файла (макс 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('Файл слишком большой. Максимум 5 МБ');
+      return;
+    }
+
+    // Проверка типа файла
+    if (!file.type.startsWith('image/')) {
+      toast.error('Можно загружать только изображения');
+      return;
+    }
+
+    setIsUploadingAvatar(true);
+    try {
+      const updatedProfile = await uploadAvatarApi(file);
+      setProfile(updatedProfile);
+      const currentUser = useAuthStore.getState().user;
+      setUser(mapProfileToUser(updatedProfile, currentUser));
+      toast.success('Аватар успешно обновлён');
+    } catch (error) {
+      console.error(error);
+      toast.error('Не удалось загрузить аватар');
+    } finally {
+      setIsUploadingAvatar(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    setIsDeletingAccount(true);
+    try {
+      await deleteAccountApi();
+      clearAuth();
+      toast.success('Аккаунт удалён. Мы сохранили ваши данные в архиве.');
+      navigate('/');
+    } catch (error) {
+      console.error(error);
+      toast.error('Не удалось удалить аккаунт');
+    } finally {
+      setIsDeletingAccount(false);
+      setShowDeleteModal(false);
+    }
+  };
+
+  const handleRequestPhone = async () => {
+    if (phoneForm.newPhone.length !== 11) {
+      toast.error('Введите корректный номер телефона');
+      return;
+    }
+
+    setIsRequestingPhone(true);
+    try {
+      const response: PhoneChangeRequestResponse = await requestPhoneChange(phoneForm.newPhone);
+      setProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              pendingPhoneChange: response.pendingPhoneChange,
+              phoneChangeExpiresAt: response.phoneChangeExpiresAt
+            }
+          : prev
+      );
+      toast.success('Мы отправили код на новый номер');
+      setPhoneForm((prev) => ({ ...prev, code: '' }));
+    } catch (error) {
+      console.error(error);
+      toast.error('Не удалось отправить код');
+    } finally {
+      setIsRequestingPhone(false);
+    }
+  };
+
+  const handleConfirmPhone = async () => {
+    if (phoneForm.code.trim().length < 4) {
+      toast.error('Введите код подтверждения');
+      return;
+    }
+
+    setIsConfirmingPhone(true);
+    try {
+      const updated = await confirmPhoneChange(phoneForm.code.trim());
+      syncFromProfile(updated);
+      setPhoneForm({ newPhone: '', code: '' });
+      toast.success('Номер успешно обновлён');
+    } catch (error) {
+      console.error(error);
+      toast.error('Неверный код подтверждения');
+    } finally {
+      setIsConfirmingPhone(false);
+    }
+  };
+
+  const handleTelegramLink = () => {
+    if (!telegramReady) {
+      toast.error('Подождите, Telegram ещё загружается');
+      return;
+    }
+    if (!telegramConfig?.botId) {
+      toast.error('Telegram авторизация временно недоступна');
+      return;
+    }
+
+    const telegramAuth = getTelegramLogin();
+    if (!telegramAuth?.auth) {
+      toast.error('Не удалось инициализировать Telegram виджет');
+      return;
+    }
+
+    telegramAuth.auth(
+      {
+        bot_id: telegramConfig.botId,
+        request_access: 'write',
+        origin: window.location.origin,
+        lang: 'ru'
+      },
+      async (authData: TelegramAuthResult) => {
+        if (!authData || !authData.hash) {
+          toast.error('Telegram не предоставил данные для привязки');
+          return;
+        }
+
+        const params = new URLSearchParams();
+        (Object.entries(authData) as Array<[string, unknown]>).forEach(([key, value]) => {
+          if (value !== undefined && value !== null) {
+            params.append(key, String(value));
+          }
+        });
+
+        setIsTelegramLoading(true);
+        try {
+          const updated = await linkTelegramAccount(params.toString());
+          syncFromProfile(updated);
+          toast.success('Telegram успешно привязан');
+        } catch (error) {
+          console.error(error);
+          toast.error('Не удалось привязать Telegram');
+        } finally {
+          setIsTelegramLoading(false);
+        }
+      }
+    );
+  };
+
+  const handleTelegramUnlink = async () => {
+    setIsTelegramLoading(true);
+    try {
+      const updated = await unlinkTelegramAccount();
+      syncFromProfile(updated);
+      toast.success('Telegram отвязан');
+    } catch (error) {
+      console.error(error);
+      toast.error('Не удалось отвязать Telegram');
+    } finally {
+      setIsTelegramLoading(false);
+    }
+  };
+
+  const notificationOptions = useMemo(
+    () => [
+      {
+        key: 'push' as const,
+        label: 'Push-уведомления',
+        description: 'Молниеносные новости: скидки, акции, курьеры в пути.',
+        icon: Smartphone
+      },
+      {
+        key: 'telegram' as const,
+        label: 'Telegram-уведомления',
+        description: 'Ранний доступ к коллекциям и редким банкам протеина.',
+        icon: Send
+      },
+      {
+        key: 'sms' as const,
+        label: 'SMS-сообщения',
+        description: 'Коды подтверждения и важные сообщения о заказах.',
+        icon: MessageCircle
+      },
+      {
+        key: 'email' as const,
+        label: 'Email-рассылки',
+        description: 'Подборки статей, чек-листы и секретные промокоды.',
+        icon: Bell
+      },
+      {
+        key: 'marketing' as const,
+        label: 'Персональные предложения',
+        description: 'Подарки, бонусы и закрытые распродажи — только для своих.',
+        icon: Gift
+      }
+    ],
+    []
+  );
+
+  const pendingNotification = pendingToggle
+    ? notificationOptions.find((option) => option.key === pendingToggle.key)
+    : null;
+
+  if (isLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-5lb-gray-50">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.8 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="flex flex-col items-center gap-4"
+        >
+          <Loader2 className="h-10 w-10 animate-spin text-5lb-orange-500" />
+          <p className="text-5lb-gray-600 font-medium">Готовим настройки…</p>
+        </motion.div>
+      </main>
+    );
+  }
+
+  if (!profile) {
+    return null;
+  }
+
+  return (
+    <motion.main
+      className="min-h-screen bg-5lb-gray-50 pb-24"
+      initial="hidden"
+      animate="visible"
+      variants={containerVariants}
+    >
+      {/* Улучшенный Header с градиентом */}
+      <motion.header 
+        className="sticky top-0 z-20 relative overflow-hidden bg-gradient-to-br from-white via-white to-5lb-orange-50/40 px-4 pb-5 pt-4 shadow-sm backdrop-blur-md supports-[backdrop-filter]:bg-white/90 sm:pb-6"
+        variants={itemVariants}
+      >
+        {/* Декоративные элементы */}
+        <div className="absolute right-0 top-0 h-32 w-32 rounded-full bg-5lb-orange-100/40 blur-3xl" />
+        <div className="absolute bottom-0 left-0 h-24 w-24 rounded-full bg-5lb-red-100/30 blur-3xl" />
+        
+        <div className="relative mx-auto flex max-w-2xl items-center gap-3 sm:gap-4">
+          <motion.button
+            onClick={() => navigate(-1)}
+            className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-white shadow-lg ring-1 ring-5lb-gray-200 transition-all hover:shadow-xl sm:h-11 sm:w-11"
+            whileHover={{ scale: 1.05, rotate: -5 }}
+            whileTap={{ scale: 0.95 }}
+          >
+            <ArrowLeft size={18} className="text-5lb-gray-700 sm:w-5" />
+          </motion.button>
+          
+          {/* Аватар */}
+          {user?.avatar && getAvatarUrl(user.avatar) ? (
+            <motion.img
+              src={getAvatarUrl(user.avatar)!}
+              alt="Аватар"
+              className="h-10 w-10 flex-shrink-0 rounded-2xl object-cover shadow-lg ring-2 ring-5lb-orange-200 sm:h-12 sm:w-12"
+              whileHover={{ scale: 1.05, rotate: 3 }}
+            />
+          ) : (
+            <motion.div 
+              className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-5lb-orange-400 to-5lb-red-500 shadow-lg ring-2 ring-white sm:h-12 sm:w-12"
+              whileHover={{ scale: 1.05, rotate: -3 }}
+            >
+              {profile?.displayName?.charAt(0)?.toUpperCase() || user?.firstName?.charAt(0)?.toUpperCase() || (
+                <img src="/logo.svg" alt="5LB" className="h-6 w-6 sm:h-7 sm:w-7" />
+              )}
+            </motion.div>
+          )}
+          
+          <div className="min-w-0 flex-1">
+            <h1 className="text-xl font-black tracking-tight text-5lb-gray-900 sm:text-2xl">Настройки</h1>
+            <p className="mt-0.5 text-xs font-medium text-5lb-gray-600 truncate sm:text-sm">
+              {profile?.displayName || [profile?.firstName, profile?.lastName].filter(Boolean).join(' ') || formatStoredPhone(profile.phone)}
+            </p>
+          </div>
+        </div>
+      </motion.header>
+
+      {/* Табы навигации */}
+      <motion.div 
+        className="sticky top-[73px] z-10 mx-auto max-w-2xl bg-white/95 backdrop-blur-xl supports-[backdrop-filter]:bg-white/90 border-b border-5lb-gray-200 shadow-sm sm:top-[81px]"
+        variants={itemVariants}
+      >
+        <div className="flex overflow-x-auto hide-scrollbar px-4">
+          <div className="flex gap-0.5 min-w-full sm:gap-1">
+            {[
+              { id: 'profile' as const, label: 'Профиль', icon: User2 },
+              { id: 'notifications' as const, label: 'Уведомления', icon: Bell },
+              { id: 'contacts' as const, label: 'Контакты', icon: PhoneIcon },
+              { id: 'security' as const, label: 'Безопасность', icon: Lock }
+            ].map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <motion.button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`relative flex-1 flex items-center justify-center gap-1.5 px-2 py-3 text-xs font-bold transition-all rounded-t-2xl sm:gap-2 sm:px-4 sm:py-3.5 sm:text-sm ${
+                    isActive 
+                      ? 'text-5lb-orange-600 bg-5lb-orange-50/50' 
+                      : 'text-5lb-gray-500 hover:text-5lb-gray-700 hover:bg-5lb-gray-50/50'
+                  }`}
+                  whileTap={{ scale: 0.95 }}
+                >
+                  {isActive && (
+                    <motion.div
+                      layoutId="activeTabIndicator"
+                      className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-5lb-orange-500 via-5lb-orange-600 to-5lb-red-500 rounded-t-full"
+                      transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                    />
+                  )}
+                  <Icon 
+                    size={18} 
+                    className={`flex-shrink-0 transition-all sm:w-5 sm:h-5 ${
+                      isActive 
+                        ? 'text-5lb-orange-600' 
+                        : 'text-5lb-gray-500'
+                    }`}
+                    strokeWidth={isActive ? 2.5 : 2}
+                  />
+                  <span className="whitespace-nowrap hidden sm:inline font-semibold">{tab.label}</span>
+                </motion.button>
+              );
+            })}
+          </div>
+        </div>
+      </motion.div>
+
+      <div className="mx-auto mt-4 flex max-w-2xl flex-col gap-5 px-4 pb-20 sm:mt-6 sm:gap-6">
+        {/* Профиль */}
+        {activeTab === 'profile' && (
+          <motion.div
+            key="profile"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="flex flex-col gap-5 sm:gap-6"
+          >
+        {/* FIO */}
+        <motion.section
+          className="group relative overflow-hidden rounded-3xl bg-white p-5 shadow-lg ring-1 ring-5lb-gray-100 transition-shadow hover:shadow-xl sm:p-6"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, delay: 0.05 }}
+          whileHover={{ y: -2 }}
+        >
+          {/* Декоративный градиент */}
+          <div className="absolute -right-8 -top-8 h-32 w-32 rounded-full bg-5lb-orange-100/30 blur-3xl" />
+          
+          <div className="relative mb-5 flex items-start gap-3 sm:mb-6 sm:gap-4">
+            <motion.div 
+              className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-5lb-orange-100 to-5lb-orange-200 shadow-sm sm:h-14 sm:w-14"
+              whileHover={{ scale: 1.1, rotate: 5 }}
+            >
+              <User2 className="text-5lb-orange-600" size={24} />
+            </motion.div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-black text-5lb-gray-900 sm:text-xl">Личные данные</h2>
+              <p className="mt-1 text-xs font-medium leading-relaxed text-5lb-gray-600 sm:text-sm">
+                Корректные данные помогут быстрее доставлять и оформлять заказы
+              </p>
+            </div>
+          </div>
+
+          <div className="relative grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-2 block text-xs font-bold text-5lb-gray-700 sm:text-sm">Имя</label>
+              <input
+                type="text"
+                value={fioForm.firstName}
+                onChange={(event) =>
+                  setFioForm((prev) => ({ ...prev, firstName: event.target.value }))
+                }
+                placeholder="Иван"
+                className="w-full rounded-2xl border-2 border-5lb-gray-200 bg-5lb-gray-50 px-4 py-3 text-sm font-semibold text-5lb-gray-900 outline-none transition-all placeholder:text-5lb-gray-400 focus:border-5lb-orange-500 focus:bg-white focus:ring-4 focus:ring-5lb-orange-500/15 sm:py-3.5 sm:text-base"
+              />
+            </div>
+
+            <div>
+              <label className="mb-2 block text-xs font-bold text-5lb-gray-700 sm:text-sm">Фамилия</label>
+              <input
+                type="text"
+                value={fioForm.lastName}
+                onChange={(event) =>
+                  setFioForm((prev) => ({ ...prev, lastName: event.target.value }))
+                }
+                placeholder="Иванов"
+                className="w-full rounded-2xl border-2 border-5lb-gray-200 bg-5lb-gray-50 px-4 py-3 text-sm font-semibold text-5lb-gray-900 outline-none transition-all placeholder:text-5lb-gray-400 focus:border-5lb-orange-500 focus:bg-white focus:ring-4 focus:ring-5lb-orange-500/15 sm:py-3.5 sm:text-base"
+              />
+            </div>
+
+            <div className="sm:col-span-2">
+              <label className="mb-2 block text-xs font-bold text-5lb-gray-700 sm:text-sm">
+                Отчество
+              </label>
+              <input
+                type="text"
+                value={fioForm.middleName}
+                onChange={(event) =>
+                  setFioForm((prev) => ({ ...prev, middleName: event.target.value }))
+                }
+                placeholder="Иванович"
+                className="w-full rounded-2xl border-2 border-5lb-gray-200 bg-5lb-gray-50 px-4 py-3 text-sm font-semibold text-5lb-gray-900 outline-none transition-all placeholder:text-5lb-gray-400 focus:border-5lb-orange-500 focus:bg-white focus:ring-4 focus:ring-5lb-orange-500/15 sm:py-3.5 sm:text-base"
+              />
+            </div>
+          </div>
+
+          <motion.button
+            onClick={handleSaveProfile}
+            disabled={isSavingFio}
+            className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-5lb-orange-500 via-5lb-orange-600 to-5lb-red-500 px-5 py-3.5 text-sm font-bold text-white shadow-xl shadow-5lb-orange-500/40 transition-all hover:shadow-2xl hover:shadow-5lb-red-500/50 disabled:cursor-not-allowed disabled:opacity-60 sm:mt-6 sm:px-6 sm:py-4"
+            whileHover={{ scale: isSavingFio ? 1 : 1.02, y: -2 }}
+            whileTap={{ scale: isSavingFio ? 1 : 0.98 }}
+          >
+            {isSavingFio ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
+                <span className="text-xs sm:text-sm">Сохраняем…</span>
+              </>
+            ) : (
+              <>
+                <ShieldCheck className="h-4 w-4 sm:h-5 sm:w-5" />
+                <span className="text-xs sm:text-sm">Сохранить изменения</span>
+              </>
+            )}
+          </motion.button>
+        </motion.section>
+
+        {/* Avatar Upload */}
+        <motion.section
+          className="group relative overflow-hidden rounded-3xl bg-white p-5 shadow-lg ring-1 ring-5lb-gray-100 transition-shadow hover:shadow-xl sm:p-6"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, delay: 0.1 }}
+          whileHover={{ y: -2 }}
+        >
+          {/* Декоративный градиент */}
+          <div className="absolute -left-8 -bottom-8 h-32 w-32 rounded-full bg-5lb-red-100/30 blur-3xl" />
+          
+          <div className="relative mb-5 flex items-start gap-3 sm:mb-6 sm:gap-4">
+            <motion.div 
+              className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-pink-100 to-rose-200 shadow-sm sm:h-14 sm:w-14"
+              whileHover={{ scale: 1.1, rotate: -5 }}
+            >
+              <Camera className="text-pink-600" size={24} />
+            </motion.div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-black text-5lb-gray-900 sm:text-xl">Фото профиля</h2>
+              <p className="mt-1 text-xs font-medium leading-relaxed text-5lb-gray-600 sm:text-sm">
+                Загрузите свою фотографию для профиля
+              </p>
+            </div>
+          </div>
+
+          <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center">
+            {/* Current Avatar */}
+            <motion.div 
+              className="flex-shrink-0"
+              whileHover={{ scale: 1.05 }}
+            >
+              {profile?.avatar && getAvatarUrl(profile.avatar) ? (
+                <img
+                  src={getAvatarUrl(profile.avatar)!}
+                  alt="Аватар"
+                  className="h-20 w-20 rounded-3xl object-cover shadow-xl ring-4 ring-5lb-orange-200 sm:h-24 sm:w-24"
+                />
+              ) : (
+                <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-5lb-orange-400 to-5lb-red-500 text-2xl font-black text-white shadow-xl ring-4 ring-white sm:h-24 sm:w-24 sm:text-3xl">
+                  {profile?.displayName?.charAt(0)?.toUpperCase() || user?.firstName?.charAt(0)?.toUpperCase() || '?'}
+                </div>
+              )}
+            </motion.div>
+
+            {/* Upload Button */}
+            <div className="flex-1">
+              <input
+                type="file"
+                id="avatar-upload"
+                accept="image/*"
+                onChange={handleAvatarUpload}
+                disabled={isUploadingAvatar}
+                className="hidden"
+              />
+              <label htmlFor="avatar-upload" className="block">
+                <motion.div
+                  className="inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-5lb-orange-500 via-5lb-orange-600 to-5lb-red-500 px-5 py-3.5 text-sm font-bold text-white shadow-xl shadow-5lb-orange-500/40 transition-all hover:shadow-2xl hover:shadow-5lb-red-500/50 sm:px-6 sm:py-4"
+                  whileHover={{ scale: isUploadingAvatar ? 1 : 1.02, y: -2 }}
+                  whileTap={{ scale: isUploadingAvatar ? 1 : 0.98 }}
+                  style={{ pointerEvents: isUploadingAvatar ? 'none' : 'auto' }}
+                >
+                  {isUploadingAvatar ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
+                      <span className="text-xs sm:text-sm">Загружаем…</span>
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="h-4 w-4 sm:h-5 sm:w-5" />
+                      <span className="text-xs sm:text-sm">Загрузить фото</span>
+                    </>
+                  )}
+                </motion.div>
+              </label>
+              <p className="mt-2 text-[10px] font-medium text-5lb-gray-500 sm:mt-3 sm:text-xs">
+                JPG, PNG, WebP или GIF. Макс. 5 МБ
+              </p>
+            </div>
+          </div>
+        </motion.section>
+          </motion.div>
+        )}
+
+        {/* Уведомления */}
+        {activeTab === 'notifications' && (
+          <motion.section
+            key="notifications"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            transition={{ duration: 0.2 }}
+            className="group relative overflow-hidden rounded-3xl bg-white p-5 shadow-lg ring-1 ring-5lb-gray-100 transition-shadow hover:shadow-xl sm:p-6"
+            whileHover={{ y: -2 }}
+          >
+            {/* Декоративный градиент */}
+            <div className="absolute -right-8 -top-8 h-32 w-32 rounded-full bg-amber-100/30 blur-3xl" />
+            
+            <div className="relative mb-5 flex items-start gap-3 sm:mb-6 sm:gap-4">
+              <motion.div 
+                className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-100 to-yellow-200 shadow-sm sm:h-14 sm:w-14"
+                whileHover={{ scale: 1.1, rotate: 5 }}
+              >
+                <Bell className="text-amber-600" size={24} />
+              </motion.div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-lg font-black text-5lb-gray-900 sm:text-xl">Уведомления</h2>
+                <p className="mt-1 text-xs font-medium leading-relaxed text-5lb-gray-600 sm:text-sm">
+                  Полезные подсказки, бонусные предложения и напоминания об оплате
+                </p>
+              </div>
+            </div>
+
+            <div className="relative space-y-2.5 sm:space-y-3">
+              {notificationOptions.map((option, index) => {
+                const enabled = notifications[option.key];
+                const Icon = option.icon;
+                return (
+                  <motion.button
+                    key={option.key}
+                    type="button"
+                    onClick={() => handleNotificationToggle(option.key, !enabled)}
+                    className={`group relative flex w-full items-center gap-3 overflow-hidden rounded-2xl px-4 py-3.5 text-left shadow-sm transition-all sm:gap-4 sm:px-5 sm:py-4 ${
+                      enabled
+                        ? 'bg-gradient-to-r from-5lb-orange-50 via-amber-50 to-5lb-red-50 ring-2 ring-5lb-orange-200/60'
+                        : 'bg-5lb-gray-50 ring-1 ring-5lb-gray-200'
+                    } ${isUpdatingNotification ? 'cursor-not-allowed opacity-70' : 'hover:shadow-md'}`}
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: index * 0.05 }}
+                    whileHover={{ y: -2, scale: isUpdatingNotification ? 1 : 1.01 }}
+                    whileTap={{ scale: isUpdatingNotification ? 1 : 0.99 }}
+                    disabled={isUpdatingNotification}
+                  >
+                    {/* Декоративный элемент для активных */}
+                    {enabled && (
+                      <div className="absolute -right-4 -top-4 h-16 w-16 rounded-full bg-5lb-orange-200/20 blur-xl" />
+                    )}
+                    
+                    <motion.div
+                      className={`relative flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl shadow-sm transition-all sm:h-12 sm:w-12 ${
+                        enabled 
+                          ? 'bg-gradient-to-br from-5lb-orange-500 to-5lb-red-500 text-white' 
+                          : 'bg-white text-5lb-gray-500'
+                      }`}
+                      whileHover={{ scale: 1.1, rotate: 5 }}
+                    >
+                      <Icon size={20} className="sm:w-[22px] sm:h-[22px]" />
+                    </motion.div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-bold text-5lb-gray-900 sm:text-sm">{option.label}</p>
+                        <motion.span
+                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide sm:px-2.5 sm:py-1 sm:text-xs ${
+                            enabled 
+                              ? 'bg-5lb-orange-500 text-white' 
+                              : 'bg-5lb-gray-200 text-5lb-gray-600'
+                          }`}
+                          animate={{ scale: enabled ? [1, 1.1, 1] : 1 }}
+                          transition={{ duration: 0.3 }}
+                        >
+                          {enabled ? '✓ ВКЛ' : 'ВЫКЛ'}
+                        </motion.span>
+                      </div>
+                      <p className="mt-1 text-[11px] font-medium leading-relaxed text-5lb-gray-600 sm:mt-1.5 sm:text-xs">
+                        {option.description}
+                      </p>
+                    </div>
+                  </motion.button>
+                );
+              })}
+            </div>
+          </motion.section>
+        )}
+
+        {/* Контакты */}
+        {activeTab === 'contacts' && (
+          <motion.div
+            key="contacts"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="flex flex-col gap-5 sm:gap-6"
+          >
+        {/* Phone */}
+        <motion.section
+          className="group relative overflow-hidden rounded-3xl bg-white p-5 shadow-lg ring-1 ring-5lb-gray-100 transition-shadow hover:shadow-xl sm:p-6"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, delay: 0.05 }}
+          whileHover={{ y: -2 }}
+        >
+          {/* Декоративный градиент */}
+          <div className="absolute -left-8 -top-8 h-32 w-32 rounded-full bg-blue-100/30 blur-3xl" />
+          
+          <div className="relative mb-5 flex items-start gap-3 sm:mb-6 sm:gap-4">
+            <motion.div 
+              className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-100 to-indigo-200 shadow-sm sm:h-14 sm:w-14"
+              whileHover={{ scale: 1.1, rotate: 5 }}
+            >
+              <PhoneIcon className="text-blue-600" size={24} />
+            </motion.div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-black text-5lb-gray-900 sm:text-xl">Номер телефона</h2>
+              <p className="mt-1 text-xs font-medium leading-relaxed text-5lb-gray-600 sm:text-sm">
+                Мы используем номер для входа и уведомлений о заказах
+              </p>
+            </div>
+          </div>
+
+          <div className="relative mb-5 rounded-2xl bg-gradient-to-r from-blue-50 via-indigo-50 to-blue-50 px-4 py-3.5 ring-2 ring-blue-100/50 sm:mb-6 sm:px-5 sm:py-4">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 flex-shrink-0 text-blue-600 sm:h-5 sm:w-5" />
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-blue-700 sm:text-xs">Текущий номер</p>
+                <p className="mt-1 text-sm font-black text-5lb-gray-900 sm:text-base">{formatStoredPhone(profile.phone)}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="relative space-y-3 sm:space-y-4">
+            <div>
+              <label className="mb-2 block text-xs font-bold text-5lb-gray-700 sm:text-sm">
+                Новый номер
+              </label>
+              <input
+                type="tel"
+                value={formatPhoneDisplay(phoneForm.newPhone)}
+                onChange={(event) =>
+                  setPhoneForm((prev) => ({
+                    ...prev,
+                    newPhone: sanitizePhoneInput(event.target.value)
+                  }))
+                }
+                placeholder="+7 (999) 123-45-67"
+                className="w-full rounded-2xl border-2 border-5lb-gray-200 bg-5lb-gray-50 px-4 py-3 text-sm font-semibold text-5lb-gray-900 outline-none transition-all placeholder:text-5lb-gray-400 focus:border-5lb-orange-500 focus:bg-white focus:ring-4 focus:ring-5lb-orange-500/15 sm:py-3.5 sm:text-base"
+              />
+            </div>
+
+            <motion.button
+              onClick={handleRequestPhone}
+              disabled={isRequestingPhone || phoneForm.newPhone.length !== 11}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-5lb-orange-500 via-5lb-orange-600 to-5lb-red-500 px-5 py-3.5 text-sm font-bold text-white shadow-xl shadow-5lb-orange-500/40 transition-all hover:shadow-2xl hover:shadow-5lb-red-500/50 disabled:cursor-not-allowed disabled:opacity-60 sm:px-6 sm:py-4"
+              whileHover={{ scale: isRequestingPhone ? 1 : 1.02, y: -2 }}
+              whileTap={{ scale: isRequestingPhone ? 1 : 0.98 }}
+            >
+              {isRequestingPhone ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
+                  <span className="text-xs sm:text-sm">Отправляем код…</span>
+                </>
+              ) : (
+                <>
+                  <Send className="h-4 w-4 sm:h-5 sm:w-5" />
+                  <span className="text-xs sm:text-sm">Запросить код</span>
+                </>
+              )}
+            </motion.button>
+
+            <div>
+              <label className="mb-2 block text-xs font-bold text-5lb-gray-700 sm:text-sm">
+                Код подтверждения
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={phoneForm.code}
+                onChange={(event) =>
+                  setPhoneForm((prev) => ({
+                    ...prev,
+                    code: event.target.value.replace(/\D/g, '').slice(0, 6)
+                  }))
+                }
+                placeholder="1234"
+                className="w-full rounded-2xl border-2 border-5lb-gray-200 bg-5lb-gray-50 px-4 py-3 text-sm font-semibold text-5lb-gray-900 outline-none transition-all placeholder:text-5lb-gray-400 focus:border-5lb-orange-500 focus:bg-white focus:ring-4 focus:ring-5lb-orange-500/15 sm:py-3.5 sm:text-base"
+              />
+            </div>
+
+            <motion.button
+              onClick={handleConfirmPhone}
+              disabled={isConfirmingPhone || phoneForm.code.length < 4}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-5lb-orange-300 bg-white px-5 py-3.5 text-sm font-bold text-5lb-orange-600 shadow-lg shadow-5lb-orange-500/10 transition-all hover:bg-gradient-to-r hover:from-5lb-orange-50 hover:to-amber-50 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-60 sm:px-6 sm:py-4"
+              whileHover={{ scale: isConfirmingPhone ? 1 : 1.02, y: -2 }}
+              whileTap={{ scale: isConfirmingPhone ? 1 : 0.98 }}
+            >
+              {isConfirmingPhone ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
+                  <span className="text-xs sm:text-sm">Проверяем…</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="h-4 w-4 sm:h-5 sm:w-5" />
+                  <span className="text-xs sm:text-sm">Подтвердить номер</span>
+                </>
+              )}
+            </motion.button>
+          </div>
+        </motion.section>
+
+        {/* Telegram */}
+        <motion.section
+          className="group relative overflow-hidden rounded-3xl bg-white p-5 shadow-lg ring-1 ring-5lb-gray-100 transition-shadow hover:shadow-xl sm:p-6"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, delay: 0.1 }}
+          whileHover={{ y: -2 }}
+        >
+          {/* Декоративный градиент */}
+          <div className="absolute -right-8 -top-8 h-32 w-32 rounded-full bg-[#2AABEE]/20 blur-3xl" />
+          
+          <div className="relative mb-5 flex items-start gap-3 sm:mb-6 sm:gap-4">
+            <motion.div 
+              className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-[#2AABEE]/15 to-[#229ED9]/20 shadow-sm sm:h-14 sm:w-14"
+              whileHover={{ scale: 1.1, rotate: -5 }}
+            >
+              <Send className="text-[#2AABEE]" size={24} />
+            </motion.div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-black text-5lb-gray-900 sm:text-xl">Telegram-аккаунт</h2>
+              <p className="mt-1 text-xs font-medium leading-relaxed text-5lb-gray-600 sm:text-sm">
+                Привяжите Telegram, чтобы получать заказ в один клик и не пропускать бонусы
+              </p>
+            </div>
+          </div>
+
+          <div className="relative mb-5 rounded-2xl bg-gradient-to-r from-[#2AABEE]/10 via-blue-50 to-[#2AABEE]/10 px-4 py-3.5 ring-2 ring-[#2AABEE]/20 sm:mb-6 sm:px-5 sm:py-4">
+            <div className="flex items-center gap-2">
+              {profile.telegramLinked ? (
+                <>
+                  <Link2 className="h-4 w-4 flex-shrink-0 text-[#2AABEE] sm:h-5 sm:w-5" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-[#2AABEE] sm:text-xs">Привязан аккаунт</p>
+                    <p className="mt-1 text-sm font-black text-5lb-gray-900 sm:text-base">
+                      @{profile.telegramUsername || 'без ника'}
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Unlink className="h-4 w-4 flex-shrink-0 text-5lb-gray-400 sm:h-5 sm:w-5" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-5lb-gray-500 sm:text-xs">Статус</p>
+                    <p className="mt-1 text-sm font-black text-5lb-gray-600 sm:text-base">Telegram пока не привязан</p>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="relative flex flex-col gap-3 sm:flex-row">
+            <motion.button
+              onClick={handleTelegramLink}
+              disabled={isTelegramLoading || profile.telegramLinked}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#2AABEE] to-[#229ED9] px-5 py-3.5 text-sm font-bold text-white shadow-xl shadow-[#2AABEE]/40 transition-all hover:shadow-2xl hover:shadow-[#2AABEE]/60 disabled:cursor-not-allowed disabled:opacity-60 sm:px-6 sm:py-4"
+              whileHover={{ scale: profile.telegramLinked ? 1 : 1.02, y: -2 }}
+              whileTap={{ scale: profile.telegramLinked ? 1 : 0.98 }}
+            >
+              {isTelegramLoading && !profile.telegramLinked ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
+                  <span className="text-xs sm:text-sm">Привязываем…</span>
+                </>
+              ) : (
+                <>
+                  <Link2 className="h-4 w-4 sm:h-5 sm:w-5" />
+                  <span className="text-xs sm:text-sm">
+                    {profile.telegramLinked ? 'Уже привязан' : 'Привязать Telegram'}
+                  </span>
+                </>
+              )}
+            </motion.button>
+
+            {profile.telegramLinked && (
+              <motion.button
+                onClick={handleTelegramUnlink}
+                disabled={isTelegramLoading}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border-2 border-5lb-gray-200 bg-white px-5 py-3.5 text-sm font-bold text-5lb-gray-700 shadow-lg shadow-5lb-gray-200/20 transition-all hover:bg-5lb-gray-50 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-60 sm:px-6 sm:py-4"
+                whileHover={{ scale: isTelegramLoading ? 1 : 1.02, y: -2 }}
+                whileTap={{ scale: isTelegramLoading ? 1 : 0.98 }}
+              >
+                {isTelegramLoading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
+                    <span className="text-xs sm:text-sm">Отключаем…</span>
+                  </>
+                ) : (
+                  <>
+                    <Unlink className="h-4 w-4 sm:h-5 sm:w-5" />
+                    <span className="text-xs sm:text-sm">Отвязать</span>
+                  </>
+                )}
+              </motion.button>
+            )}
+          </div>
+        </motion.section>
+          </motion.div>
+        )}
+
+        {/* Безопасность */}
+        {activeTab === 'security' && (
+          <motion.section
+            key="security"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            transition={{ duration: 0.2 }}
+            className="group relative overflow-hidden rounded-3xl bg-white p-5 shadow-lg ring-1 ring-5lb-gray-100 transition-shadow hover:shadow-xl sm:p-6"
+            whileHover={{ y: -2 }}
+          >
+          {/* Декоративный градиент */}
+          <div className="absolute -left-8 -bottom-8 h-32 w-32 rounded-full bg-5lb-gray-100/40 blur-3xl" />
+          
+          <div className="relative mb-5 flex items-start gap-3 sm:mb-6 sm:gap-4">
+            <motion.div 
+              className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-5lb-gray-100 to-5lb-gray-200 shadow-sm sm:h-14 sm:w-14"
+              whileHover={{ scale: 1.1, rotate: 5 }}
+            >
+              <ShieldCheck className="text-5lb-gray-700" size={24} />
+            </motion.div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-black text-5lb-gray-900 sm:text-xl">Управление аккаунтом</h2>
+              <p className="mt-1 text-xs font-medium leading-relaxed text-5lb-gray-600 sm:text-sm">
+                Здесь можно выйти из аккаунта или полностью удалить профиль
+              </p>
+            </div>
+          </div>
+
+          <div className="relative flex flex-col gap-3 sm:flex-row">
+            <motion.button
+              type="button"
+              onClick={() => setShowLogoutModal(true)}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl border-2 border-5lb-gray-200 bg-white px-5 py-3.5 text-sm font-bold text-5lb-gray-700 shadow-lg shadow-5lb-gray-200/20 transition-all hover:bg-5lb-gray-50 hover:shadow-xl sm:px-6 sm:py-4"
+              whileHover={{ scale: 1.02, y: -2 }}
+              whileTap={{ scale: 0.98 }}
+            >
+              <span className="text-xs sm:text-sm">Выйти из аккаунта</span>
+            </motion.button>
+            <motion.button
+              type="button"
+              onClick={() => setShowDeleteModal(true)}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl border-2 border-red-300 bg-white px-5 py-3.5 text-sm font-bold text-red-600 shadow-lg shadow-red-200/20 transition-all hover:bg-gradient-to-r hover:from-red-50 hover:to-rose-50 hover:shadow-xl sm:px-6 sm:py-4"
+              whileHover={{ scale: 1.02, y: -2 }}
+              whileTap={{ scale: 0.98 }}
+            >
+              <span className="text-xs sm:text-sm">Удалить аккаунт</span>
+            </motion.button>
+          </div>
+          </motion.section>
+        )}
+      </div>
+
+      {pendingToggle && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <motion.div 
+            className="absolute inset-0 bg-black/50 backdrop-blur-md" 
+            onClick={cancelNotificationToggle}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          />
+          <motion.div
+            className="relative z-10 w-full max-w-md overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-5lb-gray-100"
+            initial={{ opacity: 0, scale: 0.9, y: 30 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+          >
+            {/* Градиентный header */}
+            <div className="relative overflow-hidden bg-gradient-to-br from-amber-500 via-5lb-orange-500 to-5lb-red-500 px-6 py-6">
+              <div className="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10 blur-2xl" />
+              <div className="absolute -bottom-10 -left-10 h-32 w-32 rounded-full bg-5lb-red-600/30 blur-2xl" />
+              <div className="relative flex items-center gap-3">
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/20 backdrop-blur-sm">
+                  <Bell className="h-6 w-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-white">
+                    Отключить «{pendingNotification?.label ?? 'уведомления'}»?
+                  </h3>
+                  <p className="mt-1 text-sm font-medium text-white/90">
+                    Вы уверены в этом решении?
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Контент */}
+            <div className="p-6">
+              <p className="text-sm font-medium leading-relaxed text-5lb-gray-600">
+                Без них легко пропустить бонусы, подарки или сообщения о доставке. Оставьте включённым — это всего пара сигналов, но они экономят время и деньги.
+              </p>
+              {pendingNotification?.description && (
+                <div className="mt-4 rounded-2xl bg-gradient-to-r from-amber-50 to-orange-50 px-4 py-3 ring-2 ring-amber-100/50">
+                  <p className="text-xs font-bold uppercase tracking-wide text-amber-700">Что вы потеряете:</p>
+                  <p className="mt-1 text-sm font-medium text-5lb-gray-700">
+                    {pendingNotification.description}
+                  </p>
+                </div>
+              )}
+              <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                <motion.button
+                  type="button"
+                  onClick={cancelNotificationToggle}
+                  className="flex-1 rounded-2xl bg-gradient-to-r from-5lb-orange-500 via-5lb-orange-600 to-5lb-red-500 px-6 py-4 text-sm font-bold text-white shadow-xl shadow-5lb-orange-500/40 transition-all hover:shadow-2xl hover:shadow-5lb-red-500/50"
+                  whileHover={{ scale: 1.02, y: -2 }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  Оставить включённым
+                </motion.button>
+                <motion.button
+                  type="button"
+                  onClick={confirmNotificationToggle}
+                  className="flex-1 rounded-2xl border-2 border-5lb-gray-200 bg-white px-6 py-4 text-sm font-bold text-5lb-gray-700 shadow-lg shadow-5lb-gray-200/20 transition-all hover:bg-5lb-gray-50 hover:shadow-xl"
+                  whileHover={{ scale: 1.02, y: -2 }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  Всё равно отключить
+                </motion.button>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {showLogoutModal && (
+        <GradientModal
+          isOpen={showLogoutModal}
+          onClose={() => setShowLogoutModal(false)}
+          title="Выйти из аккаунта?"
+          subtitle="Вы сможете вернуться в любой момент"
+          icon={ArrowLeft}
+          maxWidth="md"
+          showHandle={false}
+        >
+          <div className="p-6">
+              <p className="text-sm font-medium leading-relaxed text-5lb-gray-600">
+                Вы сможете вернуться в любой момент, просто авторизовавшись заново. Все ваши данные останутся в безопасности.
+              </p>
+              <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                <motion.button
+                  type="button"
+                  onClick={() => setShowLogoutModal(false)}
+                  className="flex-1 rounded-2xl border-2 border-5lb-gray-200 bg-white px-6 py-4 text-sm font-bold text-5lb-gray-700 shadow-lg shadow-5lb-gray-200/20 transition-all hover:bg-5lb-gray-50 hover:shadow-xl"
+                  whileHover={{ scale: 1.02, y: -2 }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  Отмена
+                </motion.button>
+                <motion.button
+                  type="button"
+                  onClick={handleLogout}
+                  className="flex-1 rounded-2xl bg-gradient-to-r from-5lb-orange-500 via-5lb-orange-600 to-5lb-red-500 px-6 py-4 text-sm font-bold text-white shadow-xl shadow-5lb-orange-500/40 transition-all hover:shadow-2xl hover:shadow-5lb-red-500/50 disabled:opacity-60"
+                  disabled={isLoggingOut}
+                  whileHover={{ scale: isLoggingOut ? 1 : 1.02, y: -2 }}
+                  whileTap={{ scale: isLoggingOut ? 1 : 0.98 }}
+                >
+                  {isLoggingOut ? (
+                    <>
+                      <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
+                      Выходим…
+                    </>
+                  ) : (
+                    'Выйти'
+                  )}
+                </motion.button>
+              </div>
+          </div>
+        </GradientModal>
+      )}
+
+      {showDeleteModal && (
+        <GradientModal
+          isOpen={showDeleteModal}
+          onClose={() => setShowDeleteModal(false)}
+          title="Удалить аккаунт?"
+          subtitle="Это действие нельзя отменить"
+          icon={ShieldCheck}
+          maxWidth="md"
+          showHandle={false}
+          gradientType="red"
+        >
+          <div className="p-6">
+              <div className="rounded-2xl bg-red-50 px-4 py-3 ring-2 ring-red-100/50">
+                <p className="text-xs font-bold uppercase tracking-wide text-red-700">⚠️ Внимание</p>
+                <p className="mt-1 text-sm font-medium leading-relaxed text-red-800">
+                  Все ваши данные будут удалены безвозвратно. Это действие нельзя отменить.
+                </p>
+              </div>
+              <p className="mt-4 text-sm font-medium leading-relaxed text-5lb-gray-600">
+                Вы потеряете доступ к истории заказов, бонусам и всем персональным данным. Подумайте дважды перед подтверждением.
+              </p>
+              <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                <motion.button
+                  type="button"
+                  onClick={() => setShowDeleteModal(false)}
+                  className="flex-1 rounded-2xl border-2 border-5lb-gray-200 bg-white px-6 py-4 text-sm font-bold text-5lb-gray-700 shadow-lg shadow-5lb-gray-200/20 transition-all hover:bg-5lb-gray-50 hover:shadow-xl"
+                  whileHover={{ scale: 1.02, y: -2 }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  Отмена
+                </motion.button>
+                <motion.button
+                  type="button"
+                  onClick={handleDeleteAccount}
+                  className="flex-1 rounded-2xl bg-gradient-to-r from-red-500 via-red-600 to-red-700 px-6 py-4 text-sm font-bold text-white shadow-xl shadow-red-500/40 transition-all hover:shadow-2xl hover:shadow-red-600/50 disabled:opacity-60"
+                  disabled={isDeletingAccount}
+                  whileHover={{ scale: isDeletingAccount ? 1 : 1.02, y: -2 }}
+                  whileTap={{ scale: isDeletingAccount ? 1 : 0.98 }}
+                >
+                  {isDeletingAccount ? (
+                    <>
+                      <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
+                      Удаляем…
+                    </>
+                  ) : (
+                    'Удалить аккаунт'
+                  )}
+                </motion.button>
+              </div>
+          </div>
+        </GradientModal>
+      )}
+    </motion.main>
+  );
+};
