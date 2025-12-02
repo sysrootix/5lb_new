@@ -202,7 +202,7 @@ docker-compose -f docker-compose.dev.yml up
 - CRM Frontend на http://localhost:5174
 - Backend на http://localhost:60000
 - CRM Backend на http://localhost:60001
-- PostgreSQL на localhost:5432
+- PostgreSQL на localhost:60003
 
 ## 🔐 Безопасность
 
@@ -239,7 +239,7 @@ docker-compose restart postgres
 
 ```bash
 # Проверьте, что использует порты
-netstat -tulpn | grep -E '(80|443|5432|60000|60001)'
+netstat -tulpn | grep -E '(80|443|60003|60000|60001)'
 
 # Остановите PM2 если он запущен
 pm2 stop all

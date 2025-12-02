@@ -82,7 +82,7 @@ docker stats
 
 ```bash
 # На старом сервере
-pg_dump -U postgres -h localhost -p 5432 5lb_db > /tmp/5lb_backup.sql
+pg_dump -U postgres -h localhost -p 60003 5lb_db > /tmp/5lb_backup.sql
 ```
 
 ### Шаг 2: Перенос бэкапа на новый сервер
@@ -201,7 +201,7 @@ docker-compose up -d
 docker exec -it 5lb-postgres psql -U postgres -d 5lb_db
 
 # Через psql с хост-машины (если установлен)
-psql -h localhost -p 5432 -U postgres -d 5lb_db
+psql -h localhost -p 60003 -U postgres -d 5lb_db
 ```
 
 ### Создание бэкапа

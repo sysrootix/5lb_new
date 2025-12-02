@@ -233,14 +233,14 @@ TELEGRAM_BOT_TOKEN=ваш_токен_бота
 ### Production (docker-compose.yml)
 - 80 - HTTP (Nginx)
 - 443 - HTTPS (Nginx)
-- 5432 - PostgreSQL
+- 60003 - PostgreSQL
 - 60000 - Backend API
 - 60001 - CRM Backend API
 
 ### Development (docker-compose.dev.yml)
 - 5173 - Frontend dev server
 - 5174 - CRM Frontend dev server
-- 5432 - PostgreSQL
+- 60003 - PostgreSQL
 - 60000 - Backend API
 - 60001 - CRM Backend API
 - 9229 - Backend debug port

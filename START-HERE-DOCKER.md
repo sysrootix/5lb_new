@@ -181,7 +181,7 @@ docker-compose up -d
 Убедитесь, что порты не заняты:
 
 ```bash
-netstat -tulpn | grep -E '(80|443|5432|60000|60001)'
+netstat -tulpn | grep -E '(80|443|60003|60000|60001)'
 
 # Если PM2 запущен - остановите его
 pm2 stop all

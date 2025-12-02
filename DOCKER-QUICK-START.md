@@ -137,7 +137,7 @@ docker-compose restart postgres
 
 ```bash
 # Проверьте, какие процессы используют порты
-netstat -tulpn | grep -E '(80|443|5432|60000|60001)'
+netstat -tulpn | grep -E '(80|443|60003|60000|60001)'
 
 # Остановите PM2 если он запущен
 pm2 stop all
